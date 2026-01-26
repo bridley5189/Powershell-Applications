@@ -3,6 +3,8 @@
 
 Collection of small, focused PowerShell tools and utilities.
 
+> ⚠️ **Development Mode** — All tools in this repository are currently in **testing and development**. Features may change, and stability is not guaranteed. Use at your own risk in production environments.
+
 ## 📁 Root Folders
 
 ### 📂 Log_Reader
