@@ -33,3 +33,24 @@ jobs:
               $results | Format-Table -AutoSize
             }
           }
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
+          Install-Module -Name Pester -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Run Pester Tests
+        shell: pwsh
+        run: |
+          $testPath = 'tests'
+          if (Test-Path $testPath) {
+            Write-Host "Running Pester tests in $testPath"
+            $config = New-PesterConfiguration
+            $config.Run.Path = $testPath
+            $config.Run.Exit = $true
+            $config.Output.Verbosity = 'Detailed'
+            Invoke-Pester -Configuration $config
+          } else {
+            Write-Host "No tests directory found"
+          }
