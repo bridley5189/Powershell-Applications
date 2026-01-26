@@ -1,0 +1,16 @@
+# Backup Files
+*.bak
+*.backup
+*.backup-*
+
+# Temporary Files
+tmp_*
+temp_*
+
+# IDE
+.vscode/settings.json
+.vscode/launch.json
+
+# System
+.DS_Store
+Thumbs.db
