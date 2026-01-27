@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Backup Files
 *.bak
 *.backup
@@ -14,3 +15,18 @@ temp_*
 # System
 .DS_Store
 Thumbs.db
+=======
+# Binaries and installers (prefer Releases)
+*.exe
+*.msi
+*.zip
+
+# Logs
+logs/
+*.log
+
+# Editor/OS
+.vscode/
+Thumbs.db
+.DS_Store
+>>>>>>> 6ddb7bd (chore(structure): organize scripts into folders; add PSScriptAnalyzer CI, .gitignore, and docs template; expand README)
