@@ -1,0 +1,23 @@
+# Backup and temporary files
+*.bak
+*.backup
+*-backup*
+*.2026-01-20
+tmp_patch_marker.txt
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/launch.json
+.vscode/settings.json
+*.swp
+*.swo
+
+# PowerShell build output
+obj/
+bin/
+
+# Compiled executables (keep .exe in repo but ignore build artifacts)
+!/PowerShell-Script-Runner.exe

@@ -1,0 +1,2679 @@
+<#
+.SYNOPSIS
+    PowerShell Script Runner - Professional Edition
+    A powerful GUI application for managing and executing PowerShell scripts
+
+.DESCRIPTION
+    PowerShell Script Runner is a comprehensive Windows Forms-based application that provides
+    an intuitive graphical interface for browsing, executing, and managing PowerShell scripts.
+    
+    This application is designed for system administrators, developers, and power users who need
+    a centralized way to organize and run their PowerShell script collection without needing to
+    open PowerShell console or use the command line.
+
+.FEATURES
+    Core Features:
+    • Script Browsing & Filtering: Quickly search and filter scripts from selected folders
+    • Recursive Folder Scanning: Option to include scripts from all subfolders
+    • Script Execution: Run scripts as current user or with administrator privileges
+    • Script Parameters: Input dialog to pass arguments to scripts (Shift+Click Run or double-click)
+    • Stop Script Button: Terminate running scripts with a single click
+    • Real-time Monitoring: Live terminal output with color support and execution timer
+    
+    Organization & History:
+    • Script History: Track and quick-access your 15 most recent scripts
+    • Execution Log: Persistent log with success/failure status, duration, and timestamps
+    • View Execution Log: Dialog to review past script runs with color-coded status
+    
+    Code Viewer & Editor:
+    • Syntax Highlighting: Color-coded PowerShell keywords, cmdlets, variables, strings, and comments
+    • Code Preview: View full script code in the integrated editor
+    • Code Editor: Edit and save script modifications directly from the application
+    • Copy Code: One-click copy of script content to clipboard
+    
+    Scheduling:
+    • Script Scheduler: Schedule scripts to run at specific dates and times
+    • Scheduled Tasks Manager: View, manage, and delete pending/completed tasks
+    • Toast Notifications: Windows notifications when scheduled scripts complete
+    
+    AI Assistant (OpenAI Integration):
+    • Review Script: AI-powered analysis for issues, security, and improvements
+    • Improve Script: Automatically optimize and enhance existing scripts
+    • Create Script: Generate new scripts from natural language descriptions
+    • Ask AI: Get PowerShell coding help and answer questions
+    • Secure API Key Storage: Encrypted storage for OpenAI API credentials
+    
+    User Interface:
+    • Settings Persistence: Automatically saves window size, position, and last folder
+    • Visual Running Indicators: Progress bar, terminal highlighting, and spinner during execution
+    • Tooltips: Helpful hints on all buttons
+    • Resizable Panels: Adjustable code viewer and terminal output sections
+    
+    Execution Features:
+    • Admin Elevation: UAC prompt integration for administrator-level script execution
+    • Elapsed Time Counter: Monitor how long scripts have been running
+    • Spinner Animation: Visual feedback during script execution
+
+.AUTHOR
+    Created by Bill Ridley
+
+.VERSION
+    Professional Edition v2.1 with AI Integration
+
+.EXAMPLES
+    # Launch the application
+    .\PowerShell-Script-Runner.ps1
+
+    # Via PowerShell with execution policy bypass
+    powershell -ExecutionPolicy Bypass -File "PowerShell-Script-Runner.ps1"
+
+    # Via the compiled executable (no PowerShell console required)
+    .\PowerShell-Script-Runner.exe
+
+.KEYBOARD_SHORTCUTS
+    • Shift+Click Run: Open parameters dialog before running
+    • Shift+Click Admin: Open parameters dialog before running as admin
+    • Double-click script: Open parameters dialog and run
+
+.SYSTEM_REQUIREMENTS
+    • Windows 10 or later (for toast notifications)
+    • PowerShell 5.0 or later
+    • .NET Framework 4.5 or later
+
+.USAGE
+    1. Launch the application by running the .ps1 file or .exe executable
+    2. Click "Browse..." to select a folder containing your PowerShell scripts (.ps1 files)
+    3. Enable "Recursive" checkbox to include scripts from subfolders
+    4. Scripts will appear in the left panel - select any script to view its code
+    5. Click "Run" to execute as current user or "Admin" to run as administrator
+    6. Hold Shift while clicking Run/Admin to enter script parameters
+    7. Monitor execution in the Terminal Output panel on the right
+    8. Use "Stop" button to terminate a running script at any time
+    9. Click "Schedule" to run a script at a specific time
+    10. Access recent scripts from the "Recent Scripts" history list
+    11. Toggle between Dark and Light modes using the theme button
+    12. Edit scripts inline and save changes directly to the file
+
+.SETTINGS
+    User preferences and settings are automatically saved to:
+    %APPDATA%\PowerShellScriptRunner\
+    
+    Files stored:
+    • settings.json - Theme, window size, position, last folder, recursive mode
+    • execution_history.json - Log of all script executions with status
+    • scheduled_tasks.json - Pending and completed scheduled tasks
+    • favorites.json - Favorited/pinned scripts
+
+.NOTES
+    - All scripts execute with output capture and live display
+    - Scripts must be .ps1 files to be recognized
+    - Administrator elevation uses Windows UAC prompt
+    - History is limited to the 15 most recent scripts
+    - Execution log stores up to 100 entries
+    - Settings persist across application sessions
+    - Toast notifications appear for scheduled task completions
+
+.CREDIT
+    Application Design & Development: Bill Ridley
+    Professional GUI Implementation with Windows Forms
+    Advanced Script Management and Execution Framework
+
+#>
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Settings file path - store in AppData for portability
+$settingsDir = Join-Path ([Environment]::GetFolderPath("ApplicationData")) "PowerShellScriptRunner"
+$settingsFile = Join-Path $settingsDir "settings.json"
+$executionLogFile = Join-Path $settingsDir "execution_history.json"
+$scheduledTasksFile = Join-Path $settingsDir "scheduled_tasks.json"
+$favoritesFile = Join-Path $settingsDir "favorites.json"
+
+# Ensure settings directory exists
+if (-not (Test-Path $settingsDir)) {
+    New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+}
+
+# Global variables for timer
+$scriptTimer = $null
+$spinnerIndex = 0
+$spinnerChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+$currentRunningScript = ""
+$scriptStartTime = $null
+$scriptPath = ""
+$runningProcess = $null  # Track the currently running PowerShell process
+$isScriptRunning = $false  # Flag to track if a script is running
+$selectedFolder = ""  # Track the last selected folder
+$script:executionHistory = @()  # Persistent execution history
+$script:scheduledTasks = @()  # Scheduled tasks list
+$script:favorites = @()  # Favorites/pinned scripts
+$script:schedulerTimer = $null  # Timer for checking scheduled tasks
+$script:openAIApiKey = $null  # OpenAI API key (loaded from encrypted storage)
+$script:aiModel = "gpt-4"  # Default AI model
+
+# Color scheme definitions - Light Mode
+$lightMode = @{
+    BackColor = [System.Drawing.Color]::White
+    PanelBackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+    ForeColor = [System.Drawing.Color]::FromArgb(33, 37, 41)
+    TextBackColor = [System.Drawing.Color]::FromArgb(250, 250, 250)
+    ListBackColor = [System.Drawing.Color]::FromArgb(248, 249, 250)
+    ButtonForeColor = [System.Drawing.Color]::White
+}
+
+# Create main form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "PowerShell Script Runner - Professional Edition"
+$form.Size = New-Object System.Drawing.Size(1400, 900)
+$form.StartPosition = "CenterScreen"
+$form.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+$form.Icon = [System.Drawing.SystemIcons]::Application
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+$form.MinimumSize = New-Object System.Drawing.Size(1000, 700)
+$form.Padding = New-Object System.Windows.Forms.Padding(10)
+
+# Top panel - Repository selection
+$topPanel = New-Object System.Windows.Forms.Panel
+$topPanel.Location = New-Object System.Drawing.Point(0, 0)
+$topPanel.Size = New-Object System.Drawing.Size(1380, 80)
+$topPanel.BackColor = [System.Drawing.Color]::White
+$topPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$topPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$repoLabel = New-Object System.Windows.Forms.Label
+$repoLabel.Text = "Repository:"
+$repoLabel.Location = New-Object System.Drawing.Point(15, 15)
+$repoLabel.Size = New-Object System.Drawing.Size(100, 25)
+$repoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$repoLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$folderTextBox = New-Object System.Windows.Forms.TextBox
+$folderTextBox.Location = New-Object System.Drawing.Point(120, 15)
+$folderTextBox.Size = New-Object System.Drawing.Size(1100, 25)
+$folderTextBox.ReadOnly = $true
+$folderTextBox.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 250)
+$folderTextBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$folderTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$folderTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$folderButton = New-Object System.Windows.Forms.Button
+$folderButton.Text = "Browse..."
+$folderButton.Location = New-Object System.Drawing.Point(1230, 12)
+$folderButton.Size = New-Object System.Drawing.Size(120, 35)
+$folderButton.BackColor = [System.Drawing.Color]::FromArgb(0, 123, 255)
+$folderButton.ForeColor = [System.Drawing.Color]::White
+$folderButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$folderButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$folderButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$refreshButton = New-Object System.Windows.Forms.Button
+$refreshButton.Text = "Refresh"
+$refreshButton.Location = New-Object System.Drawing.Point(1230, 52)
+$refreshButton.Size = New-Object System.Drawing.Size(120, 35)
+$refreshButton.BackColor = [System.Drawing.Color]::FromArgb(23, 162, 184)
+$refreshButton.ForeColor = [System.Drawing.Color]::White
+$refreshButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$refreshButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$refreshButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$aiButton = New-Object System.Windows.Forms.Button
+$aiButton.Text = "AI Assistant"
+$aiButton.Location = New-Object System.Drawing.Point(15, 45)
+$aiButton.Size = New-Object System.Drawing.Size(130, 30)
+$aiButton.BackColor = [System.Drawing.Color]::FromArgb(138, 43, 226)
+$aiButton.ForeColor = [System.Drawing.Color]::White
+$aiButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$aiButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$aiButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$topPanel.Controls.AddRange(@($repoLabel, $folderTextBox, $refreshButton, $folderButton, $aiButton))
+
+# Left panel - Scripts list
+$leftPanel = New-Object System.Windows.Forms.Panel
+$leftPanel.Location = New-Object System.Drawing.Point(0, 90)
+$leftPanel.Size = New-Object System.Drawing.Size(450, 680)
+$leftPanel.BackColor = [System.Drawing.Color]::White
+$leftPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$leftPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$scriptsLabel = New-Object System.Windows.Forms.Label
+$scriptsLabel.Text = "PowerShell Scripts"
+$scriptsLabel.Location = New-Object System.Drawing.Point(15, 10)
+$scriptsLabel.Size = New-Object System.Drawing.Size(200, 25)
+$scriptsLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$scriptsLabel.ForeColor = [System.Drawing.Color]::FromArgb(33, 37, 41)
+
+$searchLabel = New-Object System.Windows.Forms.Label
+$searchLabel.Text = "Search:"
+$searchLabel.Location = New-Object System.Drawing.Point(15, 35)
+$searchLabel.Size = New-Object System.Drawing.Size(60, 20)
+$searchLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$searchLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$searchTextBox = New-Object System.Windows.Forms.TextBox
+$searchTextBox.Location = New-Object System.Drawing.Point(75, 35)
+$searchTextBox.Size = New-Object System.Drawing.Size(250, 25)
+$searchTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$searchTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$recursiveCheckBox = New-Object System.Windows.Forms.CheckBox
+$recursiveCheckBox.Text = "Include Subfolders"
+$recursiveCheckBox.Location = New-Object System.Drawing.Point(330, 35)
+$recursiveCheckBox.Size = New-Object System.Drawing.Size(120, 25)
+$recursiveCheckBox.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$recursiveCheckBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$scriptsListView = New-Object System.Windows.Forms.ListView
+$scriptsListView.Location = New-Object System.Drawing.Point(15, 70)
+$scriptsListView.Size = New-Object System.Drawing.Size(420, 330)
+$scriptsListView.View = [System.Windows.Forms.View]::Details
+$scriptsListView.FullRowSelect = $true
+$scriptsListView.GridLines = $true
+$scriptsListView.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 250)
+$scriptsListView.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$scriptsListView.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$scriptsListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$scriptsListView.Columns.Add("★", 30) | Out-Null
+$scriptsListView.Columns.Add("Name", 280) | Out-Null
+$scriptsListView.Columns.Add("Size (KB)", 80) | Out-Null
+
+# Default sort state for scripts list
+$script:sortColumn = "Name"
+$script:sortDirection = "Asc"
+
+# Create tooltip for parameter hints
+$toolTip = New-Object System.Windows.Forms.ToolTip
+$toolTip.InitialDelay = 500
+$toolTip.ReshowDelay = 100
+$toolTip.AutoPopDelay = 5000
+
+$runButton = New-Object System.Windows.Forms.Button
+$runButton.Text = "Run"
+$runButton.Location = New-Object System.Drawing.Point(15, 410)
+$runButton.Size = New-Object System.Drawing.Size(95, 35)
+$runButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+$runButton.ForeColor = [System.Drawing.Color]::White
+$runButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$runButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$runButton.Enabled = $false
+$runButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+$toolTip.SetToolTip($runButton, "Run script (Shift+Click for parameters)")
+
+$runAsAdminButton = New-Object System.Windows.Forms.Button
+$runAsAdminButton.Text = "Admin"
+$runAsAdminButton.Location = New-Object System.Drawing.Point(115, 410)
+$runAsAdminButton.Size = New-Object System.Drawing.Size(95, 35)
+$runAsAdminButton.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$runAsAdminButton.ForeColor = [System.Drawing.Color]::White
+$runAsAdminButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$runAsAdminButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$runAsAdminButton.Enabled = $false
+$runAsAdminButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+$toolTip.SetToolTip($runAsAdminButton, "Run as Administrator (Shift+Click for parameters)")
+
+$stopButton = New-Object System.Windows.Forms.Button
+$stopButton.Text = "Stop"
+$stopButton.Location = New-Object System.Drawing.Point(215, 410)
+$stopButton.Size = New-Object System.Drawing.Size(95, 35)
+$stopButton.BackColor = [System.Drawing.Color]::FromArgb(255, 85, 0)
+$stopButton.ForeColor = [System.Drawing.Color]::White
+$stopButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$stopButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$stopButton.Enabled = $false
+$stopButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$scheduleButton = New-Object System.Windows.Forms.Button
+$scheduleButton.Text = "Schedule"
+$scheduleButton.Location = New-Object System.Drawing.Point(315, 410)
+$scheduleButton.Size = New-Object System.Drawing.Size(95, 35)
+$scheduleButton.BackColor = [System.Drawing.Color]::FromArgb(102, 16, 242)
+$scheduleButton.ForeColor = [System.Drawing.Color]::White
+$scheduleButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$scheduleButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$scheduleButton.Enabled = $false
+$scheduleButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+$toolTip.SetToolTip($scheduleButton, "Schedule script to run at a specific time")
+
+# History panel
+$historyPanel = New-Object System.Windows.Forms.Panel
+$historyPanel.Location = New-Object System.Drawing.Point(15, 455)
+$historyPanel.Size = New-Object System.Drawing.Size(420, 205)
+$historyPanel.BackColor = [System.Drawing.Color]::White
+$historyPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$historyPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$historyLabel = New-Object System.Windows.Forms.Label
+$historyLabel.Text = "Recent Scripts:"
+$historyLabel.Location = New-Object System.Drawing.Point(10, 5)
+$historyLabel.Size = New-Object System.Drawing.Size(100, 20)
+$historyLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+
+$historyListBox = New-Object System.Windows.Forms.ListBox
+$historyListBox.Location = New-Object System.Drawing.Point(10, 25)
+$historyListBox.Size = New-Object System.Drawing.Size(395, 140)
+$historyListBox.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$historyListBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$clearHistoryButton = New-Object System.Windows.Forms.Button
+$clearHistoryButton.Text = "Clear History"
+$clearHistoryButton.Location = New-Object System.Drawing.Point(10, 170)
+$clearHistoryButton.Size = New-Object System.Drawing.Size(395, 25)
+$clearHistoryButton.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+$clearHistoryButton.ForeColor = [System.Drawing.Color]::White
+$clearHistoryButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$clearHistoryButton.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+$clearHistoryButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$historyPanel.Controls.AddRange(@($historyLabel, $historyListBox, $clearHistoryButton))
+
+$leftPanel.Controls.AddRange(@($scriptsLabel, $searchLabel, $searchTextBox, $recursiveCheckBox, $scriptsListView, $runButton, $runAsAdminButton, $stopButton, $scheduleButton, $historyPanel))
+
+# Right panel - Code viewer and terminal with resizable splitter
+$rightPanel = New-Object System.Windows.Forms.Panel
+$rightPanel.Location = New-Object System.Drawing.Point(460, 90)
+$rightPanel.Size = New-Object System.Drawing.Size(920, 680)
+$rightPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+# Create a SplitContainer for resizable code/terminal panels
+$splitContainer = New-Object System.Windows.Forms.SplitContainer
+$splitContainer.Location = New-Object System.Drawing.Point(0, 0)
+$splitContainer.Size = New-Object System.Drawing.Size(920, 680)
+$splitContainer.Orientation = [System.Windows.Forms.Orientation]::Horizontal
+$splitContainer.SplitterDistance = 320  # Initial position of splitter
+$splitContainer.SplitterWidth = 8
+$splitContainer.BackColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+$splitContainer.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+# Code viewer section (Panel 1)
+$codePanel = $splitContainer.Panel1
+$codePanel.BackColor = [System.Drawing.Color]::White
+$codePanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+
+$codeLabel = New-Object System.Windows.Forms.Label
+$codeLabel.Text = "Script Code Viewer"
+$codeLabel.Location = New-Object System.Drawing.Point(15, 10)
+$codeLabel.Size = New-Object System.Drawing.Size(200, 25)
+$codeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$codeLabel.ForeColor = [System.Drawing.Color]::FromArgb(33, 37, 41)
+$codeLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$toggleCodeButton = New-Object System.Windows.Forms.Button
+$toggleCodeButton.Text = "Hide Code"
+$toggleCodeButton.Location = New-Object System.Drawing.Point(480, 8)
+$toggleCodeButton.Size = New-Object System.Drawing.Size(100, 30)
+$toggleCodeButton.BackColor = [System.Drawing.Color]::FromArgb(52, 58, 64)
+$toggleCodeButton.ForeColor = [System.Drawing.Color]::White
+$toggleCodeButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$toggleCodeButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$toggleCodeButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$editButton = New-Object System.Windows.Forms.Button
+$editButton.Text = "Edit Code"
+$editButton.Location = New-Object System.Drawing.Point(700, 8)
+$editButton.Size = New-Object System.Drawing.Size(100, 30)
+$editButton.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+$editButton.ForeColor = [System.Drawing.Color]::Black
+$editButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$editButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$editButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$saveButton = New-Object System.Windows.Forms.Button
+$saveButton.Text = "Save Code"
+$saveButton.Location = New-Object System.Drawing.Point(810, 8)
+$saveButton.Size = New-Object System.Drawing.Size(100, 30)
+$saveButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+$saveButton.ForeColor = [System.Drawing.Color]::White
+$saveButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$saveButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$saveButton.Enabled = $false
+$saveButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+# Code textbox
+$codeTextBox = New-Object System.Windows.Forms.RichTextBox
+$codeTextBox.Location = New-Object System.Drawing.Point(15, 40)
+$codeTextBox.Size = New-Object System.Drawing.Size(890, 260)
+$codeTextBox.BackColor = [System.Drawing.Color]::FromArgb(43, 43, 43)
+$codeTextBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+$codeTextBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+$codeTextBox.ReadOnly = $true
+$codeTextBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+$codeTextBox.WordWrap = $true
+$codeTextBox.ScrollBars = [System.Windows.Forms.RichTextBoxScrollBars]::Vertical
+$codeTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$copyButton = New-Object System.Windows.Forms.Button
+$copyButton.Text = "Copy Code"
+$copyButton.Location = New-Object System.Drawing.Point(590, 8)
+$copyButton.Size = New-Object System.Drawing.Size(100, 30)
+$copyButton.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+$copyButton.ForeColor = [System.Drawing.Color]::White
+$copyButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$copyButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$copyButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$codePanel.Controls.AddRange(@($codeLabel, $toggleCodeButton, $editButton, $saveButton, $copyButton, $codeTextBox))
+
+# Terminal section (Panel 2)
+$terminalPanel = $splitContainer.Panel2
+$terminalPanel.BackColor = [System.Drawing.Color]::White
+$terminalPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+
+$terminalLabel = New-Object System.Windows.Forms.Label
+$terminalLabel.Text = "Terminal Output"
+$terminalLabel.Location = New-Object System.Drawing.Point(15, 10)
+$terminalLabel.Size = New-Object System.Drawing.Size(150, 25)
+$terminalLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$terminalLabel.ForeColor = [System.Drawing.Color]::FromArgb(33, 37, 41)
+$terminalLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$toggleTerminalButton = New-Object System.Windows.Forms.Button
+$toggleTerminalButton.Text = "Hide Output"
+$toggleTerminalButton.Location = New-Object System.Drawing.Point(760, 8)
+$toggleTerminalButton.Size = New-Object System.Drawing.Size(145, 30)
+$toggleTerminalButton.BackColor = [System.Drawing.Color]::FromArgb(52, 58, 64)
+$toggleTerminalButton.ForeColor = [System.Drawing.Color]::White
+$toggleTerminalButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$toggleTerminalButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$toggleTerminalButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$terminalTextBox = New-Object System.Windows.Forms.RichTextBox
+$terminalTextBox.Location = New-Object System.Drawing.Point(15, 40)
+$terminalTextBox.Size = New-Object System.Drawing.Size(890, 270)
+$terminalTextBox.BackColor = [System.Drawing.Color]::FromArgb(12, 12, 12)
+$terminalTextBox.ForeColor = [System.Drawing.Color]::FromArgb(0, 255, 0)
+$terminalTextBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+$terminalTextBox.ReadOnly = $true
+$terminalTextBox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+$terminalTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$clearButton = New-Object System.Windows.Forms.Button
+$clearButton.Text = "Clear Output"
+$clearButton.Location = New-Object System.Drawing.Point(15, 320)
+$clearButton.Size = New-Object System.Drawing.Size(140, 35)
+$clearButton.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+$clearButton.ForeColor = [System.Drawing.Color]::White
+$clearButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$clearButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$clearButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$viewLogButton = New-Object System.Windows.Forms.Button
+$viewLogButton.Text = "View Exec Log"
+$viewLogButton.Location = New-Object System.Drawing.Point(165, 320)
+$viewLogButton.Size = New-Object System.Drawing.Size(140, 35)
+$viewLogButton.BackColor = [System.Drawing.Color]::FromArgb(23, 162, 184)
+$viewLogButton.ForeColor = [System.Drawing.Color]::White
+$viewLogButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$viewLogButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$viewLogButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$viewScheduleButton = New-Object System.Windows.Forms.Button
+$viewScheduleButton.Text = "Scheduled Tasks"
+$viewScheduleButton.Location = New-Object System.Drawing.Point(315, 320)
+$viewScheduleButton.Size = New-Object System.Drawing.Size(140, 35)
+$viewScheduleButton.BackColor = [System.Drawing.Color]::FromArgb(102, 16, 242)
+$viewScheduleButton.ForeColor = [System.Drawing.Color]::White
+$viewScheduleButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$viewScheduleButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$viewScheduleButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+
+$terminalPanel.Controls.AddRange(@($terminalLabel, $toggleTerminalButton, $terminalTextBox, $clearButton, $viewLogButton, $viewScheduleButton))
+
+$rightPanel.Controls.Add($splitContainer)
+
+# Status bar
+$statusPanel = New-Object System.Windows.Forms.Panel
+$statusPanel.Location = New-Object System.Drawing.Point(0, 780)
+$statusPanel.Size = New-Object System.Drawing.Size(1380, 80)
+$statusPanel.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 250)
+$statusPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$statusPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+
+$statusLabel = New-Object System.Windows.Forms.Label
+$statusLabel.Text = "Ready"
+$statusLabel.Location = New-Object System.Drawing.Point(15, 10)
+$statusLabel.Size = New-Object System.Drawing.Size(400, 25)
+$statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$statusLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 123, 255)
+$statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$progressBar = New-Object System.Windows.Forms.ProgressBar
+$progressBar.Location = New-Object System.Drawing.Point(15, 40)
+$progressBar.Size = New-Object System.Drawing.Size(300, 20)
+$progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+$progressBar.Value = 0
+$progressBar.Visible = $false
+
+$pathLabel = New-Object System.Windows.Forms.Label
+$pathLabel.Text = ""
+$pathLabel.Location = New-Object System.Drawing.Point(430, 10)
+$pathLabel.Size = New-Object System.Drawing.Size(650, 50)
+$pathLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$pathLabel.ForeColor = [System.Drawing.Color]::FromArgb(73, 80, 87)
+$pathLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$creatorLabel = New-Object System.Windows.Forms.Label
+$creatorLabel.Text = "Created by Bill Ridley"
+$creatorLabel.Location = New-Object System.Drawing.Point(1100, 25)
+$creatorLabel.Size = New-Object System.Drawing.Size(250, 30)
+$creatorLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+$creatorLabel.ForeColor = [System.Drawing.Color]::Gray
+$creatorLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+
+$statusPanel.Controls.AddRange(@($statusLabel, $progressBar, $pathLabel, $creatorLabel))
+
+$form.Controls.AddRange(@($topPanel, $leftPanel, $rightPanel, $statusPanel))
+
+# Functions
+# Global variable to store all scripts
+$global:allScripts = @()
+
+# Syntax Highlighting Function for PowerShell Code
+function Apply-SyntaxHighlighting {
+    param([System.Windows.Forms.RichTextBox]$textBox)
+    
+    # Store current cursor position
+    $cursorPos = $textBox.SelectionStart
+    
+    # Suspend drawing for performance
+    $textBox.SuspendLayout()
+    
+    # Colors optimized for dark background (code viewer is always dark)
+    $defaultColor = [System.Drawing.Color]::FromArgb(212, 212, 212)     # Light gray - default text
+    $keywordColor = [System.Drawing.Color]::FromArgb(86, 156, 214)      # Blue - keywords
+    $cmdletColor = [System.Drawing.Color]::FromArgb(220, 220, 170)      # Yellow - cmdlets
+    $stringColor = [System.Drawing.Color]::FromArgb(206, 145, 120)      # Orange/Brown - strings
+    $commentColor = [System.Drawing.Color]::FromArgb(106, 153, 85)      # Green - comments
+    $variableColor = [System.Drawing.Color]::FromArgb(156, 220, 254)    # Light blue - variables
+    $operatorColor = [System.Drawing.Color]::FromArgb(180, 180, 180)    # Gray - operators
+    $typeColor = [System.Drawing.Color]::FromArgb(78, 201, 176)         # Teal - types
+    $numberColor = [System.Drawing.Color]::FromArgb(181, 206, 168)      # Light green - numbers
+    
+    # Set default color first
+    $textBox.SelectAll()
+    $textBox.SelectionColor = $defaultColor
+    
+    $text = $textBox.Text
+    
+    # PowerShell keywords
+    $keywords = @(
+        'function', 'param', 'begin', 'process', 'end', 'if', 'else', 'elseif', 
+        'switch', 'while', 'for', 'foreach', 'do', 'until', 'break', 'continue',
+        'return', 'exit', 'throw', 'try', 'catch', 'finally', 'trap', 'filter',
+        'in', 'class', 'enum', 'using', 'workflow', 'parallel', 'sequence',
+        'inlinescript', 'configuration', 'data', 'dynamicparam', 'hidden', 'static'
+    )
+    
+    # Highlight keywords (word boundaries)
+    foreach ($keyword in $keywords) {
+        $pattern = "(?i)\b$keyword\b"
+        $matches = [regex]::Matches($text, $pattern)
+        foreach ($match in $matches) {
+            $textBox.Select($match.Index, $match.Length)
+            $textBox.SelectionColor = $keywordColor
+        }
+    }
+    
+    # Highlight variables ($variableName, $env:, $script:, $global:, etc.)
+    $varPattern = '\$[\w:]+|\$\{[^}]+\}'
+    $varMatches = [regex]::Matches($text, $varPattern)
+    foreach ($match in $varMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $variableColor
+    }
+    
+    # Highlight cmdlets (Verb-Noun pattern)
+    $cmdletPattern = '\b(Get|Set|New|Remove|Add|Clear|Write|Read|Out|Start|Stop|Invoke|Test|Enable|Disable|Export|Import|ConvertTo|ConvertFrom|Format|Select|Where|Sort|Group|Measure|Compare|Copy|Move|Rename|Split|Join|Update|Register|Unregister|Wait|Show|Hide|Enter|Exit|Push|Pop|Receive|Send|Suspend|Resume|Restart|Reset|Undo|Redo|Save|Open|Close|Connect|Disconnect|Publish|Unpublish|Install|Uninstall|Find|Search|Resolve|Expand|Compress|Merge|Debug|Trace|Assert|Confirm|Deny|Grant|Revoke|Protect|Unprotect|Lock|Unlock|Watch|Use|Block|Unblock|Limit|Optimize|Initialize|Mount|Dismount|Backup|Restore|Sync|Repair|Complete|Submit|Request|Approve|Checkpoint)-\w+'
+    $cmdletMatches = [regex]::Matches($text, $cmdletPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    foreach ($match in $cmdletMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $cmdletColor
+    }
+    
+    # Highlight types [typename]
+    $typePattern = '\[[^\]]+\]'
+    $typeMatches = [regex]::Matches($text, $typePattern)
+    foreach ($match in $typeMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $typeColor
+    }
+    
+    # Highlight numbers
+    $numberPattern = '\b\d+\.?\d*\b'
+    $numberMatches = [regex]::Matches($text, $numberPattern)
+    foreach ($match in $numberMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $numberColor
+    }
+    
+    # Highlight strings (double-quoted) - be careful with escaped quotes
+    $doubleStringPattern = '"(?:[^"\\]|\\.)*"'
+    $doubleStringMatches = [regex]::Matches($text, $doubleStringPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    foreach ($match in $doubleStringMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $stringColor
+    }
+    
+    # Highlight strings (single-quoted)
+    $singleStringPattern = "'(?:[^'\\]|\\.)*'"
+    $singleStringMatches = [regex]::Matches($text, $singleStringPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    foreach ($match in $singleStringMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $stringColor
+    }
+    
+    # Highlight here-strings @" "@ and @' '@
+    $hereStringPattern = '@["''][\s\S]*?["'']@'
+    $hereStringMatches = [regex]::Matches($text, $hereStringPattern)
+    foreach ($match in $hereStringMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $stringColor
+    }
+    
+    # Highlight single-line comments (# ...) - do this last to override strings in comments
+    $commentPattern = '#(?!\>).*$'
+    $commentMatches = [regex]::Matches($text, $commentPattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+    foreach ($match in $commentMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $commentColor
+    }
+    
+    # Highlight block comments <# ... #>
+    $blockCommentPattern = '<#[\s\S]*?#>'
+    $blockCommentMatches = [regex]::Matches($text, $blockCommentPattern)
+    foreach ($match in $blockCommentMatches) {
+        $textBox.Select($match.Index, $match.Length)
+        $textBox.SelectionColor = $commentColor
+    }
+    
+    # Restore cursor position
+    $textBox.Select($cursorPos, 0)
+    $textBox.ResumeLayout()
+}
+
+function Update-ScriptsList {
+    param($folderPath)
+    
+    $scriptsListView.Items.Clear()
+    $global:allScripts = @()
+    
+    if (-not (Test-Path $folderPath)) {
+        Write-TerminalOutput "Error: Folder does not exist"
+        return
+    }
+    
+    try {
+        $isRecursive = $recursiveCheckBox.Checked
+        if ($isRecursive) {
+            $ps1Files = Get-ChildItem -Path $folderPath -Filter "*.ps1" -File -Recurse -ErrorAction SilentlyContinue
+        } else {
+            $ps1Files = Get-ChildItem -Path $folderPath -Filter "*.ps1" -File -ErrorAction SilentlyContinue
+        }
+        
+        # Load favorites for star display
+        $script:favorites = Load-Favorites
+        
+        # Sort: favorites first, then alphabetically
+        $sortedFiles = $ps1Files | Sort-Object { 
+            $isFav = if ($script:favorites -contains $_.FullName) { 0 } else { 1 }
+            $isFav, $_.Name
+        }
+        
+        foreach ($file in $sortedFiles) {
+            # Show relative path for recursive, just name for non-recursive
+            $displayName = if ($isRecursive) {
+                $relativePath = $file.FullName.Substring($folderPath.Length).TrimStart(@('\', '/'))
+                $relativePath
+            } else {
+                $file.Name
+            }
+            
+            $scriptInfo = @{
+                Name = $displayName
+                Size = [math]::Round($file.Length / 1KB, 2)
+                FullName = $file.FullName
+            }
+            $global:allScripts += $scriptInfo
+            
+            # Check if favorite
+            $starText = if ($script:favorites -contains $file.FullName) { "★" } else { "" }
+            
+            $item = New-Object System.Windows.Forms.ListViewItem($starText)
+            $item.SubItems.Add($displayName) | Out-Null
+            $item.SubItems.Add($scriptInfo.Size) | Out-Null
+            $item.Tag = $file.FullName
+            
+            # Highlight favorites with color
+            if ($script:favorites -contains $file.FullName) {
+                $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+            }
+            
+            $scriptsListView.Items.Add($item) | Out-Null
+        }
+        
+        $scanType = if ($isRecursive) { "recursively" } else { "" }
+        Write-TerminalOutput "Found $($ps1Files.Count) PowerShell scripts $scanType in $folderPath"
+        $statusLabel.Text = "Loaded $($ps1Files.Count) scripts"
+    }
+    catch {
+        Write-TerminalOutput "Error scanning folder: $($_.Exception.Message)"
+    }
+}
+
+function Filter-ScriptsList {
+    param($searchText)
+    
+    $scriptsListView.Items.Clear()
+    
+    if ([string]::IsNullOrWhiteSpace($searchText)) {
+        # If search is empty, show all items
+        $script:favorites = Load-Favorites
+        foreach ($script in $global:allScripts) {
+            $starText = if ($script:favorites -contains $script.FullName) { "★" } else { "" }
+            $item = New-Object System.Windows.Forms.ListViewItem($starText)
+            $item.SubItems.Add($script.Name) | Out-Null
+            $item.SubItems.Add($script.Size) | Out-Null
+            $item.Tag = $script.FullName
+            if ($script:favorites -contains $script.FullName) {
+                $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+            }
+            $scriptsListView.Items.Add($item) | Out-Null
+        }
+        $statusLabel.Text = "Showing all $($global:allScripts.Count) scripts"
+        return
+    }
+    
+    $script:favorites = Load-Favorites
+    $filteredScripts = $global:allScripts | Where-Object { $_.Name -like "*$searchText*" }
+    foreach ($script in $filteredScripts) {
+        $starText = if ($script:favorites -contains $script.FullName) { "★" } else { "" }
+        $item = New-Object System.Windows.Forms.ListViewItem($starText)
+        $item.SubItems.Add($script.Name) | Out-Null
+        $item.SubItems.Add($script.Size) | Out-Null
+        $item.Tag = $script.FullName
+        if ($script:favorites -contains $script.FullName) {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+        }
+        $scriptsListView.Items.Add($item) | Out-Null
+    }
+    
+    $statusLabel.Text = "Found $($filteredScripts.Count) scripts matching '$searchText'"
+}
+
+function Get-SortedScripts {
+    param($scripts)
+    
+    $isDesc = $script:sortDirection -eq "Desc"
+    $favorites = Load-Favorites
+    
+    switch ($script:sortColumn) {
+        "Size" {
+            return $scripts | Sort-Object 
+                @{ Expression = { if ($favorites -contains $_.FullName) { 0 } else { 1 } } },
+                @{ Expression = { $_.Size }; Descending = $isDesc },
+                @{ Expression = { $_.Name } }
+        }
+        "Star" {
+            return $scripts | Sort-Object 
+                @{ Expression = { if ($favorites -contains $_.FullName) { 0 } else { 1 } }; Descending = $isDesc },
+                @{ Expression = { $_.Name } }
+        }
+        default { # Name
+            return $scripts | Sort-Object 
+                @{ Expression = { if ($favorites -contains $_.FullName) { 0 } else { 1 } } },
+                @{ Expression = { $_.Name }; Descending = $isDesc }
+        }
+    }
+}
+
+function Render-ScriptsList {
+    param($scripts)
+    
+    $scriptsListView.BeginUpdate()
+    $scriptsListView.Items.Clear()
+    $favorites = Load-Favorites
+    $sortedScripts = Get-SortedScripts -scripts $scripts
+    foreach ($script in $sortedScripts) {
+        $starText = if ($favorites -contains $script.FullName) { "★" } else { "" }
+        $item = New-Object System.Windows.Forms.ListViewItem($starText)
+        $item.SubItems.Add($script.Name) | Out-Null
+        $item.SubItems.Add($script.Size) | Out-Null
+        $item.Tag = $script.FullName
+        if ($favorites -contains $script.FullName) {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+        }
+        $scriptsListView.Items.Add($item) | Out-Null
+    }
+    $scriptsListView.EndUpdate()
+}
+
+function Update-ScriptsList {
+    param($folderPath)
+    
+    $scriptsListView.Items.Clear()
+    $global:allScripts = @()
+    
+    if (-not (Test-Path $folderPath)) {
+        Write-TerminalOutput "Error: Folder does not exist"
+        return
+    }
+    
+    try {
+        $isRecursive = $recursiveCheckBox.Checked
+        if ($isRecursive) {
+            $ps1Files = Get-ChildItem -Path $folderPath -Filter "*.ps1" -File -Recurse -ErrorAction SilentlyContinue
+        } else {
+            $ps1Files = Get-ChildItem -Path $folderPath -Filter "*.ps1" -File -ErrorAction SilentlyContinue
+        }
+        
+        foreach ($file in $ps1Files) {
+            # Show relative path for recursive, just name for non-recursive
+            $displayName = if ($isRecursive) {
+                $relativePath = $file.FullName.Substring($folderPath.Length).TrimStart(@('\', '/'))
+                $relativePath
+            } else {
+                $file.Name
+            }
+            
+            $scriptInfo = @{
+                Name = $displayName
+                Size = [math]::Round($file.Length / 1KB, 2)
+                FullName = $file.FullName
+            }
+            $global:allScripts += $scriptInfo
+        }
+        
+        Render-ScriptsList -scripts $global:allScripts
+        
+        $scanType = if ($isRecursive) { "recursively" } else { "" }
+        Write-TerminalOutput "Found $($ps1Files.Count) PowerShell scripts $scanType in $folderPath"
+        $statusLabel.Text = "Loaded $($ps1Files.Count) scripts"
+    }
+    catch {
+        Write-TerminalOutput "Error scanning folder: $($_.Exception.Message)"
+    }
+}
+
+function Filter-ScriptsList {
+    param($searchText)
+    
+    if ([string]::IsNullOrWhiteSpace($searchText)) {
+        Render-ScriptsList -scripts $global:allScripts
+        $statusLabel.Text = "Showing all $($global:allScripts.Count) scripts"
+        return
+    }
+    
+    $filteredScripts = $global:allScripts | Where-Object { $_.Name -like "*$searchText*" }
+    Render-ScriptsList -scripts $filteredScripts
+    
+    $statusLabel.Text = "Found $($filteredScripts.Count) scripts matching '$searchText'"
+}
+
+function Add-ToScriptHistory {
+    param($scriptName, $scriptPath)
+    
+    # Create history entry
+    $entry = @{
+        Name = $scriptName
+        Path = $scriptPath
+        Timestamp = Get-Date -Format "HH:mm:ss"
+        Date = Get-Date -Format "MM/dd/yyyy"
+    }
+    
+    # Add to history (keep only last 15 entries)
+    $script:scriptHistory = @($entry) + $script:scriptHistory | Select-Object -First 15
+    
+    # Update the history listbox
+    Update-HistoryListBox
+}
+
+function Update-HistoryListBox {
+    $historyListBox.Items.Clear()
+    
+    if ($script:scriptHistory.Count -eq 0) {
+        $historyListBox.Items.Add("No recent scripts")
+        return
+    }
+    
+    foreach ($entry in $script:scriptHistory) {
+        $displayText = "$($entry.Name) - $($entry.Timestamp)"
+        $historyListBox.Items.Add($displayText)
+    }
+}
+
+function Get-HistoryItemPath {
+    param($index)
+    
+    if ($index -ge 0 -and $index -lt $script:scriptHistory.Count) {
+        return $script:scriptHistory[$index].Path
+    }
+    return $null
+}
+function Save-Settings {
+    $settings = @{
+        LastFolderPath = $folderTextBox.Text
+        RecursiveScan = $recursiveCheckBox.Checked
+        WindowWidth = $form.Width
+        WindowHeight = $form.Height
+        WindowX = $form.Location.X
+        WindowY = $form.Location.Y
+        RecentScripts = @($script:scriptHistory | Select-Object -First 15)
+    }
+    
+    try {
+        $jsonContent = $settings | ConvertTo-Json
+        Out-File -FilePath $settingsFile -InputObject $jsonContent -Encoding UTF8 -Force
+    } catch {
+        Write-Host "Warning: Could not save settings - $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# ==================== OpenAI API Functions ====================
+
+function Get-OpenAIApiKey {
+    # Load API key from encrypted storage
+    $apiKeyFile = Join-Path $settingsDir "openai_key.txt"
+    
+    if (Test-Path $apiKeyFile) {
+        try {
+            $encryptedKey = Get-Content $apiKeyFile
+            $script:openAIApiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(
+                    ($encryptedKey | ConvertTo-SecureString)
+                )
+            )
+            return $true
+        } catch {
+            Write-Host "Failed to load API key: $($_.Exception.Message)" -ForegroundColor Red
+            return $false
+        }
+    }
+    return $false
+}
+
+function Set-OpenAIApiKey {
+    param([string]$apiKey)
+    
+    $apiKeyFile = Join-Path $settingsDir "openai_key.txt"
+    
+    try {
+        $secureKey = ConvertTo-SecureString $apiKey -AsPlainText -Force
+        $encryptedKey = ConvertFrom-SecureString $secureKey
+        Out-File -FilePath $apiKeyFile -InputObject $encryptedKey -Encoding UTF8 -Force
+        $script:openAIApiKey = $apiKey
+        return $true
+    } catch {
+        Write-Host "Failed to save API key: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Invoke-OpenAI {
+    param(
+        [string]$prompt,
+        [string]$systemPrompt = "You are an expert PowerShell developer assistant.",
+        [string]$model = $script:aiModel
+    )
+    
+    if ([string]::IsNullOrEmpty($script:openAIApiKey)) {
+        return @{ Success = $false; Error = "API key not configured. Please set your OpenAI API key." }
+    }
+    
+    $apiUrl = "https://api.openai.com/v1/chat/completions"
+    
+    $headers = @{
+        "Authorization" = "Bearer $($script:openAIApiKey)"
+        "Content-Type" = "application/json"
+    }
+    
+    $body = @{
+        model = $model
+        messages = @(
+            @{ role = "system"; content = $systemPrompt }
+            @{ role = "user"; content = $prompt }
+        )
+        temperature = 0.7
+        max_tokens = 2000
+    } | ConvertTo-Json -Depth 10
+    
+    try {
+        $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $body -TimeoutSec 30
+        
+        if ($response.choices -and $response.choices.Count -gt 0) {
+            return @{
+                Success = $true
+                Content = $response.choices[0].message.content
+                Model = $response.model
+                Usage = $response.usage
+            }
+        } else {
+            return @{ Success = $false; Error = "No response from AI" }
+        }
+    } catch {
+        $errorMessage = $_.Exception.Message
+        if ($_.ErrorDetails.Message) {
+            $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+            $errorMessage = $errorDetails.error.message
+        }
+        return @{ Success = $false; Error = $errorMessage }
+    }
+}
+
+function Show-AIAssistantDialog {
+    # Create AI Assistant dialog
+    $aiDialog = New-Object System.Windows.Forms.Form
+    $aiDialog.Text = "AI Assistant - PowerShell Script Helper"
+    $aiDialog.Size = New-Object System.Drawing.Size(900, 700)
+    $aiDialog.StartPosition = "CenterParent"
+    $aiDialog.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+    $aiDialog.MinimumSize = New-Object System.Drawing.Size(700, 500)
+    
+    # Check if API key is configured
+    if ([string]::IsNullOrEmpty($script:openAIApiKey)) {
+        $keyPrompt = [System.Windows.Forms.MessageBox]::Show(
+            "OpenAI API key not configured. Would you like to set it now?`n`n" +
+            "You can get an API key from: https://platform.openai.com/api-keys",
+            "API Key Required",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        
+        if ($keyPrompt -eq [System.Windows.Forms.DialogResult]::Yes) {
+            $keyDialog = New-Object System.Windows.Forms.Form
+            $keyDialog.Text = "Enter OpenAI API Key"
+            $keyDialog.Size = New-Object System.Drawing.Size(500, 200)
+            $keyDialog.StartPosition = "CenterParent"
+            
+            $keyLabel = New-Object System.Windows.Forms.Label
+            $keyLabel.Text = "OpenAI API Key (starts with sk-):"
+            $keyLabel.Location = New-Object System.Drawing.Point(20, 20)
+            $keyLabel.Size = New-Object System.Drawing.Size(450, 20)
+            
+            $keyTextBox = New-Object System.Windows.Forms.TextBox
+            $keyTextBox.Location = New-Object System.Drawing.Point(20, 50)
+            $keyTextBox.Size = New-Object System.Drawing.Size(440, 25)
+            $keyTextBox.UseSystemPasswordChar = $true
+            
+            $keySaveButton = New-Object System.Windows.Forms.Button
+            $keySaveButton.Text = "Save"
+            $keySaveButton.Location = New-Object System.Drawing.Point(280, 100)
+            $keySaveButton.Size = New-Object System.Drawing.Size(80, 30)
+            $keySaveButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            
+            $keyCancelButton = New-Object System.Windows.Forms.Button
+            $keyCancelButton.Text = "Cancel"
+            $keyCancelButton.Location = New-Object System.Drawing.Point(370, 100)
+            $keyCancelButton.Size = New-Object System.Drawing.Size(80, 30)
+            $keyCancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+            
+            $keyDialog.Controls.AddRange(@($keyLabel, $keyTextBox, $keySaveButton, $keyCancelButton))
+            $keyDialog.AcceptButton = $keySaveButton
+            $keyDialog.CancelButton = $keyCancelButton
+            
+            $result = $keyDialog.ShowDialog()
+            
+            if ($result -eq [System.Windows.Forms.DialogResult]::OK -and -not [string]::IsNullOrWhiteSpace($keyTextBox.Text)) {
+                if (Set-OpenAIApiKey -apiKey $keyTextBox.Text.Trim()) {
+                    [System.Windows.Forms.MessageBox]::Show("API key saved successfully!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                } else {
+                    return
+                }
+            } else {
+                return
+            }
+        } else {
+            return
+        }
+    }
+    
+    # Top panel with action buttons
+    $aiTopPanel = New-Object System.Windows.Forms.Panel
+    $aiTopPanel.Location = New-Object System.Drawing.Point(0, 0)
+    $aiTopPanel.Size = New-Object System.Drawing.Size(900, 60)
+    $aiTopPanel.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 245)
+    $aiTopPanel.Dock = [System.Windows.Forms.DockStyle]::Top
+    
+    $reviewButton = New-Object System.Windows.Forms.Button
+    $reviewButton.Text = "Review Script"
+    $reviewButton.Location = New-Object System.Drawing.Point(15, 15)
+    $reviewButton.Size = New-Object System.Drawing.Size(130, 35)
+    $reviewButton.BackColor = [System.Drawing.Color]::FromArgb(0, 123, 255)
+    $reviewButton.ForeColor = [System.Drawing.Color]::White
+    $reviewButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $reviewButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    
+    $improveButton = New-Object System.Windows.Forms.Button
+    $improveButton.Text = "Improve Script"
+    $improveButton.Location = New-Object System.Drawing.Point(155, 15)
+    $improveButton.Size = New-Object System.Drawing.Size(130, 35)
+    $improveButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+    $improveButton.ForeColor = [System.Drawing.Color]::White
+    $improveButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $improveButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    
+    $createButton = New-Object System.Windows.Forms.Button
+    $createButton.Text = "Create Script"
+    $createButton.Location = New-Object System.Drawing.Point(295, 15)
+    $createButton.Size = New-Object System.Drawing.Size(130, 35)
+    $createButton.BackColor = [System.Drawing.Color]::FromArgb(138, 43, 226)
+    $createButton.ForeColor = [System.Drawing.Color]::White
+    $createButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $createButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    
+    $clearButton = New-Object System.Windows.Forms.Button
+    $clearButton.Text = "Clear"
+    $clearButton.Location = New-Object System.Drawing.Point(435, 15)
+    $clearButton.Size = New-Object System.Drawing.Size(90, 35)
+    $clearButton.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+    $clearButton.ForeColor = [System.Drawing.Color]::White
+    $clearButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $clearButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    
+    $browseScriptButton = New-Object System.Windows.Forms.Button
+    $browseScriptButton.Text = "Browse Script"
+    $browseScriptButton.Location = New-Object System.Drawing.Point(535, 15)
+    $browseScriptButton.Size = New-Object System.Drawing.Size(130, 35)
+    $browseScriptButton.BackColor = [System.Drawing.Color]::FromArgb(17, 110, 143)
+    $browseScriptButton.ForeColor = [System.Drawing.Color]::White
+    $browseScriptButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $browseScriptButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    
+    $aiTopPanel.Controls.AddRange(@($reviewButton, $improveButton, $createButton, $clearButton, $browseScriptButton))
+    
+    # Chat/Response area
+    $chatTextBox = New-Object System.Windows.Forms.RichTextBox
+    $chatTextBox.Location = New-Object System.Drawing.Point(15, 75)
+    $chatTextBox.Size = New-Object System.Drawing.Size(850, 450)
+    $chatTextBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $chatTextBox.ReadOnly = $true
+    $chatTextBox.BackColor = [System.Drawing.Color]::White
+    $chatTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    # Input area
+    $inputLabel = New-Object System.Windows.Forms.Label
+    $inputLabel.Text = "Ask AI:"
+    $inputLabel.Location = New-Object System.Drawing.Point(15, 540)
+    $inputLabel.Size = New-Object System.Drawing.Size(60, 20)
+    $inputLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+    
+    $inputTextBox = New-Object System.Windows.Forms.TextBox
+    $inputTextBox.Location = New-Object System.Drawing.Point(75, 537)
+    $inputTextBox.Size = New-Object System.Drawing.Size(680, 25)
+    $inputTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $inputTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    $sendButton = New-Object System.Windows.Forms.Button
+    $sendButton.Text = "Send"
+    $sendButton.Location = New-Object System.Drawing.Point(765, 535)
+    $sendButton.Size = New-Object System.Drawing.Size(100, 30)
+    $sendButton.BackColor = [System.Drawing.Color]::FromArgb(0, 123, 255)
+    $sendButton.ForeColor = [System.Drawing.Color]::White
+    $sendButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $sendButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $sendButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    # Status label
+    $aiStatusLabel = New-Object System.Windows.Forms.Label
+    $aiStatusLabel.Text = "Model: GPT-4 | Ready"
+    $aiStatusLabel.Location = New-Object System.Drawing.Point(15, 580)
+    $aiStatusLabel.Size = New-Object System.Drawing.Size(850, 20)
+    $aiStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+    $aiStatusLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    # Close button
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Text = "Close"
+    $closeButton.Location = New-Object System.Drawing.Point(765, 610)
+    $closeButton.Size = New-Object System.Drawing.Size(100, 30)
+    $closeButton.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+    $closeButton.ForeColor = [System.Drawing.Color]::White
+    $closeButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $closeButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $closeButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $closeButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    # Helper function to add message to chat
+    function Add-ChatMessage {
+        param([string]$role, [string]$message, [System.Drawing.Color]$color)
+        
+        $chatTextBox.SelectionStart = $chatTextBox.TextLength
+        $chatTextBox.SelectionLength = 0
+        
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        $chatTextBox.SelectionColor = [System.Drawing.Color]::Gray
+        $chatTextBox.AppendText("[$timestamp] ")
+        
+        $chatTextBox.SelectionColor = $color
+        $chatTextBox.SelectionFont = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $chatTextBox.AppendText("$role`n")
+        
+        $chatTextBox.SelectionColor = [System.Drawing.Color]::Black
+        $chatTextBox.SelectionFont = New-Object System.Drawing.Font("Consolas", 9)
+        $chatTextBox.AppendText("$message`n`n")
+        
+        $chatTextBox.ScrollToCaret()
+    }
+    
+    # Review Script button event
+    $reviewButton.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($codeTextBox.Text)) {
+            [System.Windows.Forms.MessageBox]::Show("No script loaded to review.", "No Script", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        
+        $aiStatusLabel.Text = "Analyzing script... Please wait"
+        $aiStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+        $aiDialog.Refresh()
+        
+        $scriptContent = $codeTextBox.Text
+        $prompt = "Please review this PowerShell script and provide:`n" +
+                  "1. Overall assessment`n" +
+                  "2. Potential issues or bugs`n" +
+                  "3. Security concerns`n" +
+                  "4. Performance improvements`n" +
+                  "5. Best practices recommendations`n`n" +
+                  "Script:`n``````powershell`n$scriptContent`n``````"
+        
+        Add-ChatMessage -role "You" -message "Review this script for issues and improvements" -color ([System.Drawing.Color]::Blue)
+        
+        $response = Invoke-OpenAI -prompt $prompt -systemPrompt "You are an expert PowerShell security and code quality analyst."
+        
+        if ($response.Success) {
+            Add-ChatMessage -role "AI Assistant" -message $response.Content -color ([System.Drawing.Color]::Green)
+            $aiStatusLabel.Text = "Model: $($response.Model) | Ready"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+        } else {
+            Add-ChatMessage -role "Error" -message $response.Error -color ([System.Drawing.Color]::Red)
+            $aiStatusLabel.Text = "Error occurred"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Red
+        }
+    })
+    
+    # Improve Script button event
+    $improveButton.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($codeTextBox.Text)) {
+            [System.Windows.Forms.MessageBox]::Show("No script loaded to improve.", "No Script", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        
+        $aiStatusLabel.Text = "Improving script... Please wait"
+        $aiStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+        $aiDialog.Refresh()
+        
+        $scriptContent = $codeTextBox.Text
+        $prompt = "Please improve this PowerShell script by:`n" +
+                  "1. Adding error handling`n" +
+                  "2. Improving performance`n" +
+                  "3. Adding comments and documentation`n" +
+                  "4. Following PowerShell best practices`n" +
+                  "5. Making it more maintainable`n`n" +
+                  "Provide the complete improved script with explanations of changes made.`n`n" +
+                  "Script:`n``````powershell`n$scriptContent`n``````"
+        
+        Add-ChatMessage -role "You" -message "Improve and optimize this script" -color ([System.Drawing.Color]::Blue)
+        
+        $response = Invoke-OpenAI -prompt $prompt -systemPrompt "You are an expert PowerShell developer specializing in code optimization and best practices."
+        
+        if ($response.Success) {
+            Add-ChatMessage -role "AI Assistant" -message $response.Content -color ([System.Drawing.Color]::Green)
+            $aiStatusLabel.Text = "Model: $($response.Model) | Ready"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+        } else {
+            Add-ChatMessage -role "Error" -message $response.Error -color ([System.Drawing.Color]::Red)
+            $aiStatusLabel.Text = "Error occurred"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Red
+        }
+    })
+    
+    # Create Script button event
+    $createButton.Add_Click({
+        # Create a custom input dialog using Windows Forms
+        $inputDialog = New-Object System.Windows.Forms.Form
+        $inputDialog.Text = "Create Script from Description"
+        $inputDialog.Size = New-Object System.Drawing.Size(600, 250)
+        $inputDialog.StartPosition = "CenterParent"
+        $inputDialog.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $inputDialog.MaximizeBox = $false
+        $inputDialog.MinimizeBox = $false
+        
+        $promptLabel = New-Object System.Windows.Forms.Label
+        $promptLabel.Text = "Describe the PowerShell script you want to create:"
+        $promptLabel.Location = New-Object System.Drawing.Point(20, 20)
+        $promptLabel.Size = New-Object System.Drawing.Size(560, 30)
+        $promptLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        
+        $exampleLabel = New-Object System.Windows.Forms.Label
+        $exampleLabel.Text = "Example: Create a script to backup all files from C:\Temp to D:\Backup with timestamp"
+        $exampleLabel.Location = New-Object System.Drawing.Point(20, 55)
+        $exampleLabel.Size = New-Object System.Drawing.Size(560, 30)
+        $exampleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $exampleLabel.ForeColor = [System.Drawing.Color]::Gray
+        
+        $descriptionTextBox = New-Object System.Windows.Forms.TextBox
+        $descriptionTextBox.Location = New-Object System.Drawing.Point(20, 90)
+        $descriptionTextBox.Size = New-Object System.Drawing.Size(560, 80)
+        $descriptionTextBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $descriptionTextBox.Multiline = $true
+        $descriptionTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+        
+        $okButton = New-Object System.Windows.Forms.Button
+        $okButton.Text = "Create"
+        $okButton.Location = New-Object System.Drawing.Point(435, 185)
+        $okButton.Size = New-Object System.Drawing.Size(70, 30)
+        $okButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+        $okButton.ForeColor = [System.Drawing.Color]::White
+        $okButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        
+        $cancelButton = New-Object System.Windows.Forms.Button
+        $cancelButton.Text = "Cancel"
+        $cancelButton.Location = New-Object System.Drawing.Point(510, 185)
+        $cancelButton.Size = New-Object System.Drawing.Size(70, 30)
+        $cancelButton.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+        $cancelButton.ForeColor = [System.Drawing.Color]::White
+        $cancelButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+        $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        
+        $inputDialog.Controls.AddRange(@($promptLabel, $exampleLabel, $descriptionTextBox, $okButton, $cancelButton))
+        $inputDialog.AcceptButton = $okButton
+        $inputDialog.CancelButton = $cancelButton
+        
+        $result = $inputDialog.ShowDialog()
+        $description = $descriptionTextBox.Text
+        $inputDialog.Dispose()
+        
+        if ($result -ne [System.Windows.Forms.DialogResult]::OK -or [string]::IsNullOrWhiteSpace($description)) {
+            return
+        }
+        
+        $aiStatusLabel.Text = "Creating script... Please wait"
+        $aiStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+        $aiDialog.Refresh()
+        
+        $prompt = "Create a complete, production-ready PowerShell script based on this description:`n`n" +
+                  "$description`n`n" +
+                  "Include:`n" +
+                  "1. Error handling`n" +
+                  "2. Input validation`n" +
+                  "3. Comments and documentation`n" +
+                  "4. Progress indicators if applicable`n" +
+                  "5. Best practices`n`n" +
+                  "Provide only the script code with brief explanation."
+        
+        Add-ChatMessage -role "You" -message "Create script: $description" -color ([System.Drawing.Color]::Blue)
+        
+        $response = Invoke-OpenAI -prompt $prompt -systemPrompt "You are an expert PowerShell developer who writes clean, efficient, and well-documented scripts."
+        
+        if ($response.Success) {
+            Add-ChatMessage -role "AI Assistant" -message $response.Content -color ([System.Drawing.Color]::Green)
+            $aiStatusLabel.Text = "Model: $($response.Model) | Ready"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+            
+            # Ask if user wants to save the generated script
+            $savePrompt = [System.Windows.Forms.MessageBox]::Show(
+                "Would you like to save this generated script?",
+                "Save Script",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+            
+            if ($savePrompt -eq [System.Windows.Forms.DialogResult]::Yes) {
+                $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+                $saveDialog.Filter = "PowerShell Scripts (*.ps1)|*.ps1"
+                $saveDialog.DefaultExt = "ps1"
+                $saveDialog.InitialDirectory = $folderTextBox.Text
+                
+                if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                    try {
+                        # Extract code from response (handle markdown code blocks)
+                        $code = $response.Content
+                        if ($code -match '```powershell\s*\n(.*?)\n```') {
+                            $code = $matches[1]
+                        } elseif ($code -match '```\s*\n(.*?)\n```') {
+                            $code = $matches[1]
+                        }
+                        
+                        Out-File -FilePath $saveDialog.FileName -InputObject $code -Encoding UTF8 -Force
+                        [System.Windows.Forms.MessageBox]::Show("Script saved successfully to:`n$($saveDialog.FileName)", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                        
+                        # Refresh the scripts list
+                        Update-ScriptsList -folderPath $folderTextBox.Text
+                    } catch {
+                        [System.Windows.Forms.MessageBox]::Show("Failed to save script: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    }
+                }
+            }
+        } else {
+            Add-ChatMessage -role "Error" -message $response.Error -color ([System.Drawing.Color]::Red)
+            $aiStatusLabel.Text = "Error occurred"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Red
+        }
+    })
+    
+    # Clear button event
+    $clearButton.Add_Click({
+        $chatTextBox.Clear()
+        $aiStatusLabel.Text = "Model: GPT-4 | Ready"
+        $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+    })
+    
+    # Browse Script button event
+    $browseScriptButton.Add_Click({
+        $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
+        $fileDialog.Filter = "PowerShell Scripts (*.ps1)|*.ps1|All Files (*.*)|*.*"
+        $fileDialog.Title = "Select a PowerShell Script to Review"
+        $fileDialog.InitialDirectory = if ($folderTextBox.Text -and (Test-Path $folderTextBox.Text)) { $folderTextBox.Text } else { [Environment]::GetFolderPath("Documents") }
+        
+        if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            try {
+                $scriptPath = $fileDialog.FileName
+                $scriptContent = Get-Content $scriptPath -Raw
+                $scriptFileName = Split-Path $scriptPath -Leaf
+                
+                Add-ChatMessage -role "You" -message "I loaded the script: $scriptFileName`n`nScript content:`n`n$scriptContent" -color ([System.Drawing.Color]::Blue)
+                
+                # Automatically start AI review
+                $aiStatusLabel.Text = "Analyzing loaded script... Please wait"
+                $aiStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+                $aiDialog.Refresh()
+                
+                $prompt = "Please review this PowerShell script and provide:`n" +
+                          "1. Overall assessment`n" +
+                          "2. Potential issues or bugs`n" +
+                          "3. Security concerns`n" +
+                          "4. Performance improvements`n" +
+                          "5. Best practices recommendations`n`n" +
+                          "Script:`n``````powershell`n$scriptContent`n``````"
+                
+                $response = Invoke-OpenAI -prompt $prompt -systemPrompt "You are an expert PowerShell security and code quality analyst."
+                
+                if ($response.Success) {
+                    Add-ChatMessage -role "AI Assistant" -message $response.Content -color ([System.Drawing.Color]::Green)
+                    $aiStatusLabel.Text = "Model: $($response.Model) | Ready"
+                    $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+                } else {
+                    Add-ChatMessage -role "Error" -message $response.Error -color ([System.Drawing.Color]::Red)
+                    $aiStatusLabel.Text = "Error occurred"
+                    $aiStatusLabel.ForeColor = [System.Drawing.Color]::Red
+                }
+            } catch {
+                Add-ChatMessage -role "Error" -message "Failed to load script: $($_.Exception.Message)" -color ([System.Drawing.Color]::Red)
+                $aiStatusLabel.Text = "Error occurred"
+                $aiStatusLabel.ForeColor = [System.Drawing.Color]::Red
+            }
+        }
+    })
+    
+    # Send button event
+    $sendButton.Add_Click({
+        if ([string]::IsNullOrWhiteSpace($inputTextBox.Text)) {
+            return
+        }
+        
+        $question = $inputTextBox.Text.Trim()
+        $inputTextBox.Clear()
+        
+        $aiStatusLabel.Text = "Processing... Please wait"
+        $aiStatusLabel.ForeColor = [System.Drawing.Color]::Orange
+        $aiDialog.Refresh()
+        
+        Add-ChatMessage -role "You" -message $question -color ([System.Drawing.Color]::Blue)
+        
+        $response = Invoke-OpenAI -prompt $question
+        
+        if ($response.Success) {
+            Add-ChatMessage -role "AI Assistant" -message $response.Content -color ([System.Drawing.Color]::Green)
+            $aiStatusLabel.Text = "Model: $($response.Model) | Ready"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Gray
+        } else {
+            Add-ChatMessage -role "Error" -message $response.Error -color ([System.Drawing.Color]::Red)
+            $aiStatusLabel.Text = "Error occurred"
+            $aiStatusLabel.ForeColor = [System.Drawing.Color]::Red
+        }
+    })
+    
+    # Allow Enter key to send
+    $inputTextBox.Add_KeyDown({
+        param($sender, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+            $sendButton.PerformClick()
+            $e.SuppressKeyPress = $true
+        }
+    })
+    
+    $aiDialog.Controls.AddRange(@($aiTopPanel, $chatTextBox, $inputLabel, $inputTextBox, $sendButton, $aiStatusLabel, $closeButton))
+    $aiDialog.AcceptButton = $sendButton
+    $aiDialog.CancelButton = $closeButton
+    
+    # Welcome message
+    Add-ChatMessage -role "AI Assistant" -message "Welcome to AI Assistant!`n`nI can help you with:`n- Review Script: Analyze your script for issues and improvements`n- Improve Script: Optimize and enhance your code`n- Create Script: Generate new scripts from descriptions`n- Ask AI: General PowerShell questions and help`n`nHow can I assist you today?" -color ([System.Drawing.Color]::Green)
+    
+    $aiDialog.ShowDialog() | Out-Null
+}
+
+# Toast Notification Function
+function Show-ToastNotification {
+    param(
+        [string]$title,
+        [string]$message,
+        [string]$status = "Info"  # "Success", "Failed", "Info"
+    )
+    
+    # Use NotifyIcon balloon tip - works reliably on all Windows versions
+    try {
+        $global:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+        $global:notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
+        $global:notifyIcon.BalloonTipTitle = $title
+        $global:notifyIcon.BalloonTipText = $message
+        
+        $global:notifyIcon.BalloonTipIcon = switch ($status) {
+            "Success" { [System.Windows.Forms.ToolTipIcon]::Info }
+            "Failed" { [System.Windows.Forms.ToolTipIcon]::Error }
+            "Stopped" { [System.Windows.Forms.ToolTipIcon]::Warning }
+            default { [System.Windows.Forms.ToolTipIcon]::Info }
+        }
+        
+        $global:notifyIcon.Visible = $true
+        $global:notifyIcon.ShowBalloonTip(5000)
+        
+        # Set up timer to clean up the icon after 6 seconds
+        $cleanupTimer = New-Object System.Windows.Forms.Timer
+        $cleanupTimer.Interval = 6000
+        $cleanupTimer.Add_Tick({
+            $global:notifyIcon.Visible = $false
+            $global:notifyIcon.Dispose()
+            $this.Stop()
+            $this.Dispose()
+        })
+        $cleanupTimer.Start()
+    }
+    catch {
+        # Silently fail if notifications aren't available
+        Write-TerminalOutput "Notification: $title - $message" ([System.Drawing.Color]::FromArgb(100, 149, 237))
+    }
+}
+
+# Execution History Log Functions
+function Add-ExecutionLogEntry {
+    param(
+        [string]$scriptName,
+        [string]$scriptPath,
+        [string]$status,  # "Success", "Failed", "Stopped"
+        [int]$exitCode,
+        [int]$durationSeconds,
+        [bool]$showNotification = $false
+    )
+    
+    $entry = @{
+        ScriptName = $scriptName
+        ScriptPath = $scriptPath
+        Status = $status
+        ExitCode = $exitCode
+        Duration = $durationSeconds
+        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    }
+    
+    # Load existing history
+    $script:executionHistory = Load-ExecutionHistory
+    
+    # Add new entry at the beginning
+    $script:executionHistory = @($entry) + $script:executionHistory | Select-Object -First 100
+    
+    # Save to file
+    Save-ExecutionHistory
+    
+    # Show toast notification if requested (for scheduled tasks)
+    if ($showNotification) {
+        $durationText = if ($durationSeconds -gt 60) { "$([Math]::Floor($durationSeconds / 60))m $($durationSeconds % 60)s" } else { "${durationSeconds}s" }
+        $notifTitle = "Script $status"
+        $notifMessage = "$scriptName completed in $durationText (Exit code: $exitCode)"
+        Show-ToastNotification -title $notifTitle -message $notifMessage -status $status
+    }
+}
+
+function Load-ExecutionHistory {
+    if (-not (Test-Path $executionLogFile)) {
+        return @()
+    }
+    
+    try {
+        $history = Get-Content -Path $executionLogFile -Raw | ConvertFrom-Json
+        return @($history)
+    } catch {
+        return @()
+    }
+}
+
+function Save-ExecutionHistory {
+    try {
+        $script:executionHistory | ConvertTo-Json -Depth 3 | Out-File -FilePath $executionLogFile -Encoding UTF8 -Force
+    } catch {
+        Write-TerminalOutput "Warning: Could not save execution history" ([System.Drawing.Color]::FromArgb(255, 200, 0))
+    }
+}
+
+# Favorites Functions
+function Load-Favorites {
+    if (-not (Test-Path $favoritesFile)) {
+        return @()
+    }
+    
+    try {
+        $favs = Get-Content -Path $favoritesFile -Raw | ConvertFrom-Json
+        return @($favs)
+    } catch {
+        return @()
+    }
+}
+
+function Save-Favorites {
+    try {
+        $script:favorites | ConvertTo-Json -Depth 3 | Out-File -FilePath $favoritesFile -Encoding UTF8 -Force
+    } catch {
+        Write-TerminalOutput "Warning: Could not save favorites" ([System.Drawing.Color]::FromArgb(255, 200, 0))
+    }
+}
+
+function Is-Favorite {
+    param([string]$scriptPath)
+    $script:favorites = Load-Favorites
+    return ($script:favorites -contains $scriptPath)
+}
+
+function Toggle-Favorite {
+    param([string]$scriptPath)
+    $script:favorites = Load-Favorites
+    
+    if ($script:favorites -contains $scriptPath) {
+        # Remove from favorites
+        $script:favorites = @($script:favorites | Where-Object { $_ -ne $scriptPath })
+        $favoriteButton.Text = "☆ Fav"
+        Write-TerminalOutput "Removed from favorites" ([System.Drawing.Color]::FromArgb(255, 193, 7))
+    } else {
+        # Add to favorites
+        $script:favorites = @($script:favorites) + @($scriptPath)
+        $favoriteButton.Text = "★ Fav"
+        Write-TerminalOutput "Added to favorites" ([System.Drawing.Color]::FromArgb(255, 193, 7))
+    }
+    
+    Save-Favorites
+    
+    # Refresh the list to update star indicator
+    if ($folderTextBox.Text -and (Test-Path $folderTextBox.Text)) {
+        Update-ScriptsList -folderPath $folderTextBox.Text
+    }
+}
+
+function Update-FavoriteButton {
+    param([string]$scriptPath)
+    if (Is-Favorite -scriptPath $scriptPath) {
+        $favoriteButton.Text = "★ Fav"
+    } else {
+        $favoriteButton.Text = "☆ Fav"
+    }
+}
+
+# Script Parameters Dialog
+function Show-ParametersDialog {
+    param([string]$scriptPath, [string]$scriptName, [bool]$asAdmin = $false)
+    
+    $paramForm = New-Object System.Windows.Forms.Form
+    $paramForm.Text = "Run with Parameters: $scriptName"
+    $paramForm.Size = New-Object System.Drawing.Size(500, 300)
+    $paramForm.StartPosition = "CenterParent"
+    $paramForm.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(30, 30, 30) } else { [System.Drawing.Color]::White }
+    $paramForm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $paramForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $paramForm.MaximizeBox = $false
+    
+    $paramLabel = New-Object System.Windows.Forms.Label
+    $paramLabel.Text = "Enter script parameters (arguments):"
+    $paramLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $paramLabel.Size = New-Object System.Drawing.Size(450, 25)
+    $paramLabel.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+    
+    $paramTextBox = New-Object System.Windows.Forms.TextBox
+    $paramTextBox.Location = New-Object System.Drawing.Point(20, 50)
+    $paramTextBox.Size = New-Object System.Drawing.Size(445, 100)
+    $paramTextBox.Multiline = $true
+    $paramTextBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $paramTextBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+    $paramTextBox.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(40, 40, 40) } else { [System.Drawing.Color]::White }
+    $paramTextBox.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+    
+    $exampleLabel = New-Object System.Windows.Forms.Label
+    $exampleLabel.Text = "Example: -Name `"Value`" -Count 5 -Verbose"
+    $exampleLabel.Location = New-Object System.Drawing.Point(20, 155)
+    $exampleLabel.Size = New-Object System.Drawing.Size(450, 20)
+    $exampleLabel.ForeColor = [System.Drawing.Color]::Gray
+    $exampleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+    
+    $adminCheckBox = New-Object System.Windows.Forms.CheckBox
+    $adminCheckBox.Text = "Run as Administrator"
+    $adminCheckBox.Location = New-Object System.Drawing.Point(20, 180)
+    $adminCheckBox.Size = New-Object System.Drawing.Size(200, 25)
+    $adminCheckBox.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+    $adminCheckBox.Checked = $asAdmin
+    
+    $runBtn = New-Object System.Windows.Forms.Button
+    $runBtn.Text = "Run Script"
+    $runBtn.Location = New-Object System.Drawing.Point(140, 215)
+    $runBtn.Size = New-Object System.Drawing.Size(120, 35)
+    $runBtn.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+    $runBtn.ForeColor = [System.Drawing.Color]::White
+    $runBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $runBtn.Add_Click({
+        $params = $paramTextBox.Text.Trim()
+        $paramForm.Tag = @{
+            Parameters = $params
+            AsAdmin = $adminCheckBox.Checked
+            Run = $true
+        }
+        $paramForm.Close()
+    })
+    
+    $cancelBtn = New-Object System.Windows.Forms.Button
+    $cancelBtn.Text = "Cancel"
+    $cancelBtn.Location = New-Object System.Drawing.Point(270, 215)
+    $cancelBtn.Size = New-Object System.Drawing.Size(120, 35)
+    $cancelBtn.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+    $cancelBtn.ForeColor = [System.Drawing.Color]::White
+    $cancelBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $cancelBtn.Add_Click({
+        $paramForm.Tag = @{ Run = $false }
+        $paramForm.Close()
+    })
+    
+    $paramForm.Controls.AddRange(@($paramLabel, $paramTextBox, $exampleLabel, $adminCheckBox, $runBtn, $cancelBtn))
+    $paramForm.ShowDialog() | Out-Null
+    
+    return $paramForm.Tag
+}
+
+function Show-ExecutionLogDialog {
+    $logForm = New-Object System.Windows.Forms.Form
+    $logForm.Text = "Execution History Log"
+    $logForm.Size = New-Object System.Drawing.Size(900, 500)
+    $logForm.StartPosition = "CenterParent"
+    $logForm.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(30, 30, 30) } else { [System.Drawing.Color]::White }
+    $logForm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    
+    $logListView = New-Object System.Windows.Forms.ListView
+    $logListView.Location = New-Object System.Drawing.Point(10, 10)
+    $logListView.Size = New-Object System.Drawing.Size(865, 400)
+    $logListView.View = [System.Windows.Forms.View]::Details
+    $logListView.FullRowSelect = $true
+    $logListView.GridLines = $true
+    $logListView.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(40, 40, 40) } else { [System.Drawing.Color]::FromArgb(248, 249, 250) }
+    $logListView.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(220, 220, 220) } else { [System.Drawing.Color]::Black }
+    $logListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    $logListView.Columns.Add("Timestamp", 150) | Out-Null
+    $logListView.Columns.Add("Script Name", 250) | Out-Null
+    $logListView.Columns.Add("Status", 80) | Out-Null
+    $logListView.Columns.Add("Exit Code", 70) | Out-Null
+    $logListView.Columns.Add("Duration", 80) | Out-Null
+    $logListView.Columns.Add("Path", 220) | Out-Null
+    
+    # Load and display history
+    $history = Load-ExecutionHistory
+    foreach ($entry in $history) {
+        $item = New-Object System.Windows.Forms.ListViewItem($entry.Timestamp)
+        $item.SubItems.Add($entry.ScriptName) | Out-Null
+        $item.SubItems.Add($entry.Status) | Out-Null
+        $item.SubItems.Add($entry.ExitCode.ToString()) | Out-Null
+        $item.SubItems.Add("$($entry.Duration)s") | Out-Null
+        $item.SubItems.Add($entry.ScriptPath) | Out-Null
+        
+        # Color code by status
+        if ($entry.Status -eq "Success") {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+        } elseif ($entry.Status -eq "Failed") {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+        } else {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+        }
+        
+        $logListView.Items.Add($item) | Out-Null
+    }
+    
+    $clearLogButton = New-Object System.Windows.Forms.Button
+    $clearLogButton.Text = "Clear Log"
+    $clearLogButton.Location = New-Object System.Drawing.Point(10, 420)
+    $clearLogButton.Size = New-Object System.Drawing.Size(100, 30)
+    $clearLogButton.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+    $clearLogButton.ForeColor = [System.Drawing.Color]::White
+    $clearLogButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $clearLogButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+    $clearLogButton.Add_Click({
+        $script:executionHistory = @()
+        Save-ExecutionHistory
+        $logListView.Items.Clear()
+    })
+    
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Text = "Close"
+    $closeButton.Location = New-Object System.Drawing.Point(775, 420)
+    $closeButton.Size = New-Object System.Drawing.Size(100, 30)
+    $closeButton.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+    $closeButton.ForeColor = [System.Drawing.Color]::White
+    $closeButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $closeButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+    $closeButton.Add_Click({ $logForm.Close() })
+    
+    $logForm.Controls.AddRange(@($logListView, $clearLogButton, $closeButton))
+    $logForm.ShowDialog() | Out-Null
+}
+
+# Scheduler Functions
+function Load-ScheduledTasks {
+    if (-not (Test-Path $scheduledTasksFile)) {
+        return @()
+    }
+    
+    try {
+        $tasks = Get-Content -Path $scheduledTasksFile -Raw | ConvertFrom-Json
+        return @($tasks)
+    } catch {
+        return @()
+    }
+}
+
+function Save-ScheduledTasks {
+    try {
+        $script:scheduledTasks | ConvertTo-Json -Depth 3 | Out-File -FilePath $scheduledTasksFile -Encoding UTF8 -Force
+    } catch {
+        Write-TerminalOutput "Warning: Could not save scheduled tasks" ([System.Drawing.Color]::FromArgb(255, 200, 0))
+    }
+}
+
+function Add-ScheduledTask {
+    param(
+        [string]$scriptName,
+        [string]$scriptPath,
+        [datetime]$scheduledTime,
+        [bool]$runAsAdmin = $false
+    )
+    
+    $task = @{
+        Id = [guid]::NewGuid().ToString()
+        ScriptName = $scriptName
+        ScriptPath = $scriptPath
+        ScheduledTime = $scheduledTime.ToString("yyyy-MM-dd HH:mm:ss")
+        RunAsAdmin = $runAsAdmin
+        Status = "Pending"
+    }
+    
+    $script:scheduledTasks = Load-ScheduledTasks
+    $script:scheduledTasks = @($script:scheduledTasks) + @($task)
+    Save-ScheduledTasks
+    
+    return $task
+}
+
+function Show-ScheduleDialog {
+    param([string]$scriptPath, [string]$scriptName)
+    
+    $scheduleForm = New-Object System.Windows.Forms.Form
+    $scheduleForm.Text = "Schedule Script: $scriptName"
+    $scheduleForm.Size = New-Object System.Drawing.Size(400, 250)
+    $scheduleForm.StartPosition = "CenterParent"
+    $scheduleForm.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(30, 30, 30) } else { [System.Drawing.Color]::White }
+    $scheduleForm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $scheduleForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $scheduleForm.MaximizeBox = $false
+    
+    $dateLabel = New-Object System.Windows.Forms.Label
+    $dateLabel.Text = "Date:"
+    $dateLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $dateLabel.Size = New-Object System.Drawing.Size(80, 25)
+    $dateLabel.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+    
+    $datePicker = New-Object System.Windows.Forms.DateTimePicker
+    $datePicker.Location = New-Object System.Drawing.Point(110, 20)
+    $datePicker.Size = New-Object System.Drawing.Size(250, 25)
+    $datePicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+    $datePicker.MinDate = [DateTime]::Today
+    
+    $timeLabel = New-Object System.Windows.Forms.Label
+    $timeLabel.Text = "Time:"
+    $timeLabel.Location = New-Object System.Drawing.Point(20, 60)
+    $timeLabel.Size = New-Object System.Drawing.Size(80, 25)
+    $timeLabel.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+    
+    $timePicker = New-Object System.Windows.Forms.DateTimePicker
+    $timePicker.Location = New-Object System.Drawing.Point(110, 60)
+    $timePicker.Size = New-Object System.Drawing.Size(250, 25)
+    $timePicker.Format = [System.Windows.Forms.DateTimePickerFormat]::Time
+    $timePicker.ShowUpDown = $true
+    
+    $adminCheckBox = New-Object System.Windows.Forms.CheckBox
+    $adminCheckBox.Text = "Run as Administrator"
+    $adminCheckBox.Location = New-Object System.Drawing.Point(110, 100)
+    $adminCheckBox.Size = New-Object System.Drawing.Size(200, 25)
+    $adminCheckBox.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::Black }
+    
+    $scheduleBtn = New-Object System.Windows.Forms.Button
+    $scheduleBtn.Text = "Schedule"
+    $scheduleBtn.Location = New-Object System.Drawing.Point(110, 150)
+    $scheduleBtn.Size = New-Object System.Drawing.Size(120, 35)
+    $scheduleBtn.BackColor = [System.Drawing.Color]::FromArgb(102, 16, 242)
+    $scheduleBtn.ForeColor = [System.Drawing.Color]::White
+    $scheduleBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $scheduleBtn.Add_Click({
+        $scheduledDateTime = $datePicker.Value.Date.Add($timePicker.Value.TimeOfDay)
+        
+        if ($scheduledDateTime -le [DateTime]::Now) {
+            [System.Windows.Forms.MessageBox]::Show("Please select a future date and time.", "Invalid Time", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        
+        Add-ScheduledTask -scriptName $scriptName -scriptPath $scriptPath -scheduledTime $scheduledDateTime -runAsAdmin $adminCheckBox.Checked
+        Write-TerminalOutput "Scheduled '$scriptName' for $($scheduledDateTime.ToString('yyyy-MM-dd HH:mm:ss'))" ([System.Drawing.Color]::FromArgb(102, 16, 242))
+        $statusLabel.Text = "Task scheduled for $($scheduledDateTime.ToString('HH:mm'))"
+        $scheduleForm.Close()
+    })
+    
+    $cancelBtn = New-Object System.Windows.Forms.Button
+    $cancelBtn.Text = "Cancel"
+    $cancelBtn.Location = New-Object System.Drawing.Point(240, 150)
+    $cancelBtn.Size = New-Object System.Drawing.Size(120, 35)
+    $cancelBtn.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+    $cancelBtn.ForeColor = [System.Drawing.Color]::White
+    $cancelBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $cancelBtn.Add_Click({ $scheduleForm.Close() })
+    
+    $scheduleForm.Controls.AddRange(@($dateLabel, $datePicker, $timeLabel, $timePicker, $adminCheckBox, $scheduleBtn, $cancelBtn))
+    $scheduleForm.ShowDialog() | Out-Null
+}
+
+function Show-ScheduledTasksDialog {
+    $tasksForm = New-Object System.Windows.Forms.Form
+    $tasksForm.Text = "Scheduled Tasks"
+    $tasksForm.Size = New-Object System.Drawing.Size(700, 400)
+    $tasksForm.StartPosition = "CenterParent"
+    $tasksForm.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(30, 30, 30) } else { [System.Drawing.Color]::White }
+    $tasksForm.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    
+    $tasksListView = New-Object System.Windows.Forms.ListView
+    $tasksListView.Location = New-Object System.Drawing.Point(10, 10)
+    $tasksListView.Size = New-Object System.Drawing.Size(665, 300)
+    $tasksListView.View = [System.Windows.Forms.View]::Details
+    $tasksListView.FullRowSelect = $true
+    $tasksListView.GridLines = $true
+    $tasksListView.BackColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(40, 40, 40) } else { [System.Drawing.Color]::FromArgb(248, 249, 250) }
+    $tasksListView.ForeColor = if ($script:darkModeEnabled) { [System.Drawing.Color]::FromArgb(220, 220, 220) } else { [System.Drawing.Color]::Black }
+    $tasksListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    
+    $tasksListView.Columns.Add("Scheduled Time", 150) | Out-Null
+    $tasksListView.Columns.Add("Script Name", 200) | Out-Null
+    $tasksListView.Columns.Add("Admin", 60) | Out-Null
+    $tasksListView.Columns.Add("Status", 80) | Out-Null
+    $tasksListView.Columns.Add("Path", 160) | Out-Null
+    
+    # Load and display tasks
+    $tasks = Load-ScheduledTasks
+    foreach ($task in $tasks) {
+        $item = New-Object System.Windows.Forms.ListViewItem($task.ScheduledTime)
+        $item.SubItems.Add($task.ScriptName) | Out-Null
+        $item.SubItems.Add($(if ($task.RunAsAdmin) { "Yes" } else { "No" })) | Out-Null
+        $item.SubItems.Add($task.Status) | Out-Null
+        $item.SubItems.Add($task.ScriptPath) | Out-Null
+        $item.Tag = $task.Id
+        
+        # Color code by status
+        if ($task.Status -eq "Completed") {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(40, 167, 69)
+        } elseif ($task.Status -eq "Pending") {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(102, 16, 242)
+        }
+        
+        $tasksListView.Items.Add($item) | Out-Null
+    }
+    
+    $deleteTaskButton = New-Object System.Windows.Forms.Button
+    $deleteTaskButton.Text = "Delete Selected"
+    $deleteTaskButton.Location = New-Object System.Drawing.Point(10, 320)
+    $deleteTaskButton.Size = New-Object System.Drawing.Size(120, 30)
+    $deleteTaskButton.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+    $deleteTaskButton.ForeColor = [System.Drawing.Color]::White
+    $deleteTaskButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $deleteTaskButton.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+    $deleteTaskButton.Add_Click({
+        if ($tasksListView.SelectedItems.Count -gt 0) {
+            $taskId = $tasksListView.SelectedItems[0].Tag
+            $script:scheduledTasks = @(Load-ScheduledTasks | Where-Object { $_.Id -ne $taskId })
+            Save-ScheduledTasks
+            $tasksListView.SelectedItems[0].Remove()
+        }
+    })
+    
+    $closeBtn = New-Object System.Windows.Forms.Button
+    $closeBtn.Text = "Close"
+    $closeBtn.Location = New-Object System.Drawing.Point(575, 320)
+    $closeBtn.Size = New-Object System.Drawing.Size(100, 30)
+    $closeBtn.BackColor = [System.Drawing.Color]::FromArgb(108, 117, 125)
+    $closeBtn.ForeColor = [System.Drawing.Color]::White
+    $closeBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $closeBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Right
+    $closeBtn.Add_Click({ $tasksForm.Close() })
+    
+    $tasksForm.Controls.AddRange(@($tasksListView, $deleteTaskButton, $closeBtn))
+    $tasksForm.ShowDialog() | Out-Null
+}
+
+function Start-SchedulerTimer {
+    $script:schedulerTimer = New-Object System.Windows.Forms.Timer
+    $script:schedulerTimer.Interval = 30000  # Check every 30 seconds
+    $script:schedulerTimer.Add_Tick({
+        $tasks = Load-ScheduledTasks
+        $now = [DateTime]::Now
+        $updated = $false
+        
+        foreach ($task in $tasks) {
+            if ($task.Status -eq "Pending") {
+                $scheduledTime = [DateTime]::Parse($task.ScheduledTime)
+                if ($now -ge $scheduledTime) {
+                    # Run the scheduled task
+                    Write-TerminalOutput "Running scheduled task: $($task.ScriptName)" ([System.Drawing.Color]::FromArgb(102, 16, 242))
+                    
+                    if (Test-Path $task.ScriptPath) {
+                        # Show toast notification when scheduled task completes
+                        Run-Script -scriptPath $task.ScriptPath -asAdmin $task.RunAsAdmin -showNotification $true
+                    } else {
+                        Write-TerminalOutput "Scheduled script not found: $($task.ScriptPath)" ([System.Drawing.Color]::FromArgb(220, 53, 69))
+                        # Show error notification
+                        Show-ToastNotification -title "Scheduled Task Failed" -message "Script not found: $($task.ScriptName)" -status "Failed"
+                    }
+                    
+                    # Mark as completed
+                    $task.Status = "Completed"
+                    $updated = $true
+                }
+            }
+        }
+        
+        if ($updated) {
+            $script:scheduledTasks = $tasks
+            Save-ScheduledTasks
+        }
+    })
+    $script:schedulerTimer.Start()
+}
+
+function Load-Settings {
+    if (-not (Test-Path $settingsFile)) {
+        return $null
+    }
+    
+    try {
+        $settings = Get-Content -Path $settingsFile -Raw | ConvertFrom-Json
+        return $settings
+    } catch {
+        Write-Host "Warning: Could not load settings - $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+function Restore-Settings {
+    param($settings)
+    
+    if ($null -eq $settings) {
+        return
+    }
+    
+    # Restore window size and position
+    if ($settings.WindowWidth -and $settings.WindowHeight) {
+        $form.Width = $settings.WindowWidth
+        $form.Height = $settings.WindowHeight
+    }
+    
+    if ($settings.WindowX -and $settings.WindowY) {
+        # Only restore position if it's within reasonable bounds
+        if ($settings.WindowX -ge 0 -and $settings.WindowY -ge 0 -and $settings.WindowX -lt [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width -and $settings.WindowY -lt [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height) {
+            $form.Location = New-Object System.Drawing.Point($settings.WindowX, $settings.WindowY)
+        }
+    }
+    
+    # Restore recursive scan setting
+    if ($settings.PSObject.Properties['RecursiveScan']) {
+        $recursiveCheckBox.Checked = $settings.RecursiveScan
+    }
+    
+    # Restore last folder path and scripts
+    if ($settings.LastFolderPath -and (Test-Path $settings.LastFolderPath)) {
+        $folderTextBox.Text = $settings.LastFolderPath
+        Update-ScriptsList -folderPath $settings.LastFolderPath
+    }
+    
+    # Restore recent scripts history
+    if ($settings.RecentScripts) {
+        $script:scriptHistory = @($settings.RecentScripts)
+        Update-HistoryListBox
+    }
+}
+
+function Write-TerminalOutput {
+    param([string]$message, [object]$color = $null)
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    
+    if ($color) {
+        $terminalTextBox.SelectionColor = $color
+    }
+    $terminalTextBox.AppendText("[$timestamp] $message`r`n")
+    if ($color) {
+        $terminalTextBox.SelectionColor = $terminalTextBox.ForeColor
+    }
+    $terminalTextBox.ScrollToCaret()
+}
+
+function Start-ScriptExecution {
+    param($scriptName)
+    
+    $script:currentRunningScript = $scriptName
+    $script:scriptStartTime = Get-Date
+    $script:originalTerminalText = $terminalTextBox.Text
+    $script:isScriptRunning = $true
+    $script:spinnerIndex = 0
+    
+    # Enable stop button, disable run buttons
+    $script:stopButton.Enabled = $true
+    $script:runButton.Enabled = $false
+    $script:runAsAdminButton.Enabled = $false
+    
+    # Show progress bar with marquee style
+    $progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    $progressBar.MarqueeAnimationSpeed = 30
+    $progressBar.Visible = $true
+    
+    # Highlight terminal panel to show running
+    $terminalLabel.Text = "⚡ Terminal Output - RUNNING"
+    $terminalLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100)
+    $terminalPanel.BackColor = [System.Drawing.Color]::FromArgb(20, 40, 20)
+    
+    # Start the script timer with spinner animation
+    $script:scriptTimer = New-Object System.Windows.Forms.Timer
+    $script:scriptTimer.Interval = 100  # Update every 100ms for smooth spinner
+    $script:scriptTimer.Add_Tick({
+        $elapsed = (Get-Date) - $script:scriptStartTime
+        $spinner = $spinnerChars[$script:spinnerIndex % $spinnerChars.Count]
+        $seconds = [Math]::Floor($elapsed.TotalSeconds)
+        $statusLabel.Text = "$spinner Running: $script:currentRunningScript ($($seconds)s)"
+        $statusLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100)
+        $script:spinnerIndex++
+    })
+    $script:scriptTimer.Start()
+}
+
+function Stop-ScriptExecution {
+    # Kill the running process if it exists
+    if ($script:runningProcess -and -not $script:runningProcess.HasExited) {
+        try {
+            $script:runningProcess.Kill()
+            Write-TerminalOutput "Script execution stopped by user" ([System.Drawing.Color]::FromArgb(255, 200, 0))
+        } catch {
+            Write-TerminalOutput "Error stopping script: $($_.Exception.Message)" ([System.Drawing.Color]::FromArgb(220, 50, 50))
+        }
+    }
+    
+    if ($script:scriptTimer) {
+        $script:scriptTimer.Stop()
+        $script:scriptTimer.Dispose()
+        $script:scriptTimer = $null
+    }
+    
+    # Hide progress bar
+    $progressBar.Visible = $false
+    $progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    
+    # Restore terminal panel appearance
+    $terminalLabel.Text = "Terminal Output"
+    $colors = if ($script:darkModeEnabled) { $darkMode } else { $lightMode }
+    $terminalLabel.ForeColor = $colors.ForeColor
+    $terminalPanel.BackColor = $colors.BackColor
+    
+    # Update UI
+    $script:stopButton.Enabled = $false
+    $script:runButton.Enabled = ($scriptsListView.SelectedItems.Count -gt 0)
+    $script:runAsAdminButton.Enabled = ($scriptsListView.SelectedItems.Count -gt 0)
+    $script:isScriptRunning = $false
+    $script:runningProcess = $null
+    
+    # Update status to show completion time
+    if ($scriptStartTime -and $currentRunningScript) {
+        $elapsed = (Get-Date) - $scriptStartTime
+        $elapsedStr = "$([Math]::Floor($elapsed.TotalSeconds))s"
+        
+        $statusLabel.Text = "[DONE] Completed: $currentRunningScript ($elapsedStr)"
+        $statusLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 150, 255)
+    } else {
+        $statusLabel.Text = "Ready"
+        $statusLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 123, 255)
+    }
+    
+    $currentRunningScript = ""
+    $scriptStartTime = $null
+}
+
+function Run-Script {
+    param($scriptPath, $asAdmin = $false, $parameters = "", $showNotification = $false)
+    
+    if (-not (Test-Path $scriptPath)) {
+        Write-TerminalOutput "Error: Script file does not exist"
+        return
+    }
+    
+    $scriptName = [System.IO.Path]::GetFileName($scriptPath)
+    Start-ScriptExecution -scriptName $scriptName
+    
+    $paramDisplay = if ($parameters) { " with params: $parameters" } else { "" }
+    Write-TerminalOutput "Starting script: $scriptPath $(if ($asAdmin) { '(as Administrator)' } else { '(normal user)' })$paramDisplay"
+    
+    try {
+        if ($asAdmin) {
+            # Run as administrator - with UAC prompt
+            Write-TerminalOutput "Requesting administrator elevation..."
+            
+            $psArgs = if ($parameters) { "-File `"$scriptPath`" $parameters" } else { "-File `"$scriptPath`"" }
+            $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -Verb RunAs -PassThru -Wait
+            
+            # Store process reference for stopping
+            $script:runningProcess = $process
+            
+            Write-TerminalOutput "Admin script completed with exit code: $($process.ExitCode)"
+            
+            # Log execution
+            $duration = if ($script:scriptStartTime) { [Math]::Floor(((Get-Date) - $script:scriptStartTime).TotalSeconds) } else { 0 }
+            $status = if ($process.ExitCode -eq 0) { "Success" } else { "Failed" }
+            Add-ExecutionLogEntry -scriptName $scriptName -scriptPath $scriptPath -status $status -exitCode $process.ExitCode -durationSeconds $duration -showNotification $showNotification
+        } else {
+            # Run as current user - capture output directly
+            $tempOut = [System.IO.Path]::GetTempFileName()
+            $tempErr = [System.IO.Path]::GetTempFileName()
+            
+            $psArgs = if ($parameters) { "-File `"$scriptPath`" $parameters" } else { "-File `"$scriptPath`"" }
+            $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -NoNewWindow -PassThru -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr
+            
+            # Store process reference for stopping
+            $script:runningProcess = $process
+            
+            # Wait for process to complete
+            $process.WaitForExit()
+            
+            # Read and display output
+            if (Test-Path $tempOut) {
+                $output = Get-Content $tempOut -Raw
+                if ($output) {
+                    Write-TerminalOutput "Output:`n$output"
+                }
+                Remove-Item $tempOut -Force
+            }
+            
+            if (Test-Path $tempErr) {
+                $errorOutput = Get-Content $tempErr -Raw
+                if ($errorOutput) {
+                    Write-TerminalOutput "Errors:`n$errorOutput"
+                }
+                Remove-Item $tempErr -Force
+            }
+            
+            # Log execution
+            $duration = if ($script:scriptStartTime) { [Math]::Floor(((Get-Date) - $script:scriptStartTime).TotalSeconds) } else { 0 }
+            $status = if ($process.ExitCode -eq 0) { "Success" } else { "Failed" }
+            Add-ExecutionLogEntry -scriptName $scriptName -scriptPath $scriptPath -status $status -exitCode $process.ExitCode -durationSeconds $duration -showNotification $showNotification
+        }
+        
+        Write-TerminalOutput "Script completed with exit code: $($process.ExitCode)"
+        Stop-ScriptExecution
+    }
+    catch {
+        Write-TerminalOutput "Error running script: $($_.Exception.Message)"
+        
+        # Log failed execution
+        $duration = if ($script:scriptStartTime) { [Math]::Floor(((Get-Date) - $script:scriptStartTime).TotalSeconds) } else { 0 }
+        Add-ExecutionLogEntry -scriptName $scriptName -scriptPath $scriptPath -status "Failed" -exitCode -1 -durationSeconds $duration -showNotification $showNotification
+        
+        Stop-ScriptExecution
+    }
+}
+
+# Event handlers
+$folderButton.Add_Click({
+    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+    $folderBrowser.Description = "Select a folder containing PowerShell scripts"
+    $folderBrowser.ShowNewFolderButton = $false
+    
+    if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $selectedFolder = $folderBrowser.SelectedPath
+        $folderTextBox.Text = $selectedFolder
+        Update-ScriptsList -folderPath $selectedFolder
+    }
+})
+
+$refreshButton.Add_Click({
+    if ($folderTextBox.Text -and (Test-Path $folderTextBox.Text)) {
+        Update-ScriptsList -folderPath $folderTextBox.Text
+        $statusLabel.Text = "Scripts list refreshed"
+    } else {
+        $statusLabel.Text = "No folder selected to refresh"
+    }
+})
+
+$aiButton.Add_Click({
+    Show-AIAssistantDialog
+})
+
+$recursiveCheckBox.Add_CheckedChanged({
+    if ($folderTextBox.Text -and (Test-Path $folderTextBox.Text)) {
+        Update-ScriptsList -folderPath $folderTextBox.Text
+        $mode = if ($recursiveCheckBox.Checked) { "enabled" } else { "disabled" }
+        Write-TerminalOutput "Recursive scanning $mode"
+    }
+})
+
+$searchTextBox.Add_TextChanged({
+    Filter-ScriptsList -searchText $searchTextBox.Text
+})
+
+$scriptsListView.Add_ColumnClick({
+    param($sender, $e)
+    $newColumn = switch ($e.Column) {
+        0 { "Star" }
+        1 { "Name" }
+        2 { "Size" }
+        default { $script:sortColumn }
+    }
+
+    if ($script:sortColumn -eq $newColumn) {
+        $script:sortDirection = if ($script:sortDirection -eq "Asc") { "Desc" } else { "Asc" }
+    } else {
+        $script:sortColumn = $newColumn
+        $script:sortDirection = "Asc"
+    }
+
+    $currentScripts = if ([string]::IsNullOrWhiteSpace($searchTextBox.Text)) {
+        $global:allScripts
+    } else {
+        $global:allScripts | Where-Object { $_.Name -like "*$($searchTextBox.Text)*" }
+    }
+
+    Render-ScriptsList -scripts $currentScripts
+})
+
+$scriptsListView.Add_SelectedIndexChanged({
+    $selectedItems = $scriptsListView.SelectedItems
+    $hasSelection = $selectedItems.Count -gt 0
+    $runButton.Enabled = $hasSelection
+    $runAsAdminButton.Enabled = $hasSelection
+    $scheduleButton.Enabled = $hasSelection
+    
+    if ($hasSelection) {
+        $selectedItem = $selectedItems[0]
+        $pathLabel.Text = "Path: $($selectedItem.Tag)"
+        
+        # Load script content with syntax highlighting
+        try {
+            $scriptContent = Get-Content -Path $selectedItem.Tag -Raw
+            $codeTextBox.Text = $scriptContent
+            Apply-SyntaxHighlighting -textBox $codeTextBox
+            $codeTextBox.Select(0, 0)  # Scroll to top
+        }
+        catch {
+            $codeTextBox.Text = "Error loading script content: $($_.Exception.Message)"
+        }
+    } else {
+        $pathLabel.Text = ""
+        $codeTextBox.Text = ""
+    }
+})
+
+$runButton.Add_Click({
+    $selectedItem = $scriptsListView.SelectedItems[0]
+    if ($selectedItem) {
+        $scriptPath = $selectedItem.Tag
+        $scriptName = $selectedItem.SubItems[1].Text
+        # Check if Shift key is held for parameters dialog
+        if ([System.Windows.Forms.Control]::ModifierKeys -eq [System.Windows.Forms.Keys]::Shift) {
+            $result = Show-ParametersDialog -scriptPath $scriptPath -scriptName $scriptName
+            if ($result -and $result.Run) {
+                Add-ToScriptHistory -scriptName $scriptName -scriptPath $scriptPath
+                Run-Script -scriptPath $scriptPath -asAdmin $result.AsAdmin -parameters $result.Parameters
+            }
+        } else {
+            Add-ToScriptHistory -scriptName $scriptName -scriptPath $scriptPath
+            Run-Script -scriptPath $scriptPath -asAdmin $false
+        }
+    }
+})
+
+$runAsAdminButton.Add_Click({
+    $selectedItem = $scriptsListView.SelectedItems[0]
+    if ($selectedItem) {
+        $scriptPath = $selectedItem.Tag
+        $scriptName = $selectedItem.SubItems[1].Text
+        # Check if Shift key is held for parameters dialog
+        if ([System.Windows.Forms.Control]::ModifierKeys -eq [System.Windows.Forms.Keys]::Shift) {
+            $result = Show-ParametersDialog -scriptPath $scriptPath -scriptName $scriptName
+            if ($result -and $result.Run) {
+                Add-ToScriptHistory -scriptName $scriptName -scriptPath $scriptPath
+                Run-Script -scriptPath $scriptPath -asAdmin $true -parameters $result.Parameters
+            }
+        } else {
+            Add-ToScriptHistory -scriptName $scriptName -scriptPath $scriptPath
+            Run-Script -scriptPath $scriptPath -asAdmin $true
+        }
+    }
+})
+
+$clearButton.Add_Click({
+    $terminalTextBox.Clear()
+    Stop-ScriptExecution
+})
+
+$script:codeVisible = $true
+$toggleCodeButton.Add_Click({
+    $script:codeVisible = -not $script:codeVisible
+    $codeTextBox.Visible = $script:codeVisible
+    $editButton.Visible = $script:codeVisible
+    $saveButton.Visible = $script:codeVisible
+    $copyButton.Visible = $script:codeVisible
+    $toggleCodeButton.Text = if ($script:codeVisible) { "Hide Code" } else { "Show Code" }
+})
+
+$script:terminalVisible = $true
+$toggleTerminalButton.Add_Click({
+    $script:terminalVisible = -not $script:terminalVisible
+    $terminalTextBox.Visible = $script:terminalVisible
+    $clearButton.Visible = $script:terminalVisible
+    $viewLogButton.Visible = $script:terminalVisible
+    $viewScheduleButton.Visible = $script:terminalVisible
+    $toggleTerminalButton.Text = if ($script:terminalVisible) { "Hide Output" } else { "Show Output" }
+})
+
+$editButton.Add_Click({
+    if ($codeTextBox.ReadOnly) {
+        $codeTextBox.ReadOnly = $false
+        $codeTextBox.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        $codeTextBox.ForeColor = [System.Drawing.Color]::White
+        $editButton.Text = "Cancel Edit"
+        $editButton.BackColor = [System.Drawing.Color]::FromArgb(220, 53, 69)
+        $saveButton.Enabled = $true
+        $statusLabel.Text = "Edit mode: Make changes and click Save"
+    } else {
+        $codeTextBox.ReadOnly = $true
+        $codeTextBox.BackColor = [System.Drawing.Color]::FromArgb(43, 43, 43)
+        $codeTextBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+        $editButton.Text = "Edit Code"
+        $editButton.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+        $saveButton.Enabled = $false
+        $statusLabel.Text = "Edit cancelled"
+        
+        # Reload original content
+        $selectedItems = $scriptsListView.SelectedItems
+        if ($selectedItems.Count -gt 0) {
+            try {
+                $scriptContent = Get-Content -Path $selectedItems[0].Tag -Raw
+                $codeTextBox.Text = $scriptContent
+                Apply-SyntaxHighlighting -textBox $codeTextBox
+            } catch {
+                $codeTextBox.Text = "Error reloading script content"
+            }
+        }
+    }
+})
+
+$saveButton.Add_Click({
+    $selectedItems = $scriptsListView.SelectedItems
+    if ($selectedItems.Count -gt 0) {
+        try {
+            $scriptPath = $selectedItems[0].Tag
+            $codeTextBox.Text | Out-File -FilePath $scriptPath -Encoding UTF8 -Force
+            $statusLabel.Text = "Script saved successfully"
+            
+            # Exit edit mode
+            $codeTextBox.ReadOnly = $true
+            $codeTextBox.BackColor = [System.Drawing.Color]::FromArgb(43, 43, 43)
+            $codeTextBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
+            $editButton.Text = "Edit Code"
+            $editButton.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+            $saveButton.Enabled = $false
+        } catch {
+            $statusLabel.Text = "Error saving script: $($_.Exception.Message)"
+        }
+    }
+})
+
+# History ListBox event handler - single-click to load in code viewer
+$historyListBox.Add_SelectedIndexChanged({
+    $selectedIndex = $historyListBox.SelectedIndex
+    if ($selectedIndex -ge 0) {
+        $scriptPath = Get-HistoryItemPath -index $selectedIndex
+        if ($scriptPath -and (Test-Path $scriptPath)) {
+            try {
+                $scriptContent = Get-Content -Path $scriptPath -Raw
+                $codeTextBox.Text = $scriptContent
+                Apply-SyntaxHighlighting -textBox $codeTextBox
+                $codeTextBox.Select(0, 0)
+                $pathLabel.Text = "Path: $scriptPath"
+                $statusLabel.Text = "Loaded from recent: $(Split-Path -Leaf $scriptPath)"
+            } catch {
+                $codeTextBox.Text = "Error loading script: $($_.Exception.Message)"
+            }
+        }
+    }
+})
+
+# History ListBox event handler - double-click to run
+$historyListBox.Add_DoubleClick({
+    $selectedIndex = $historyListBox.SelectedIndex
+    if ($selectedIndex -ge 0) {
+        $scriptPath = Get-HistoryItemPath -index $selectedIndex
+        if ($scriptPath -and (Test-Path $scriptPath)) {
+            Write-TerminalOutput "Running recent script: $(Split-Path -Leaf $scriptPath)"
+            Run-Script -scriptPath $scriptPath -asAdmin $false
+        } else {
+            Write-TerminalOutput "Script not found: $scriptPath"
+        }
+    }
+})
+
+# Clear History button event handler
+$clearHistoryButton.Add_Click({
+    $script:scriptHistory = @()
+    Update-HistoryListBox
+    Write-TerminalOutput "Script history cleared"
+    $statusLabel.Text = "History cleared"
+})
+
+# Stop button event handler
+$stopButton.Add_Click({
+    if ($isScriptRunning) {
+        Write-TerminalOutput "Attempting to stop running script..."
+        
+        # Log stopped execution
+        $duration = if ($script:scriptStartTime) { [Math]::Floor(((Get-Date) - $script:scriptStartTime).TotalSeconds) } else { 0 }
+        Add-ExecutionLogEntry -scriptName $script:currentRunningScript -scriptPath "" -status "Stopped" -exitCode -1 -durationSeconds $duration
+        
+        Stop-ScriptExecution
+    }
+})
+
+# Schedule button event handler
+$scheduleButton.Add_Click({
+    $selectedItem = $scriptsListView.SelectedItems[0]
+    if ($selectedItem) {
+        Show-ScheduleDialog -scriptPath $selectedItem.Tag -scriptName $selectedItem.SubItems[1].Text
+    }
+})
+
+# Double-click on script to run with parameters
+$scriptsListView.Add_DoubleClick({
+    $selectedItem = $scriptsListView.SelectedItems[0]
+    if ($selectedItem) {
+        $scriptPath = $selectedItem.Tag
+        $scriptName = $selectedItem.SubItems[1].Text
+        
+        # Show parameters dialog
+        $result = Show-ParametersDialog -scriptPath $scriptPath -scriptName $scriptName
+        
+        if ($result -and $result.Run) {
+            Add-ToScriptHistory -scriptName $scriptName -scriptPath $scriptPath
+            Run-Script -scriptPath $scriptPath -asAdmin $result.AsAdmin -parameters $result.Parameters
+        }
+    }
+})
+
+# View Execution Log button event handler
+$viewLogButton.Add_Click({
+    Show-ExecutionLogDialog
+})
+
+# View Scheduled Tasks button event handler
+$viewScheduleButton.Add_Click({
+    Show-ScheduledTasksDialog
+})
+
+# Copy Code button event handler
+$copyButton.Add_Click({
+    if (-not [string]::IsNullOrWhiteSpace($codeTextBox.Text)) {
+        [System.Windows.Forms.Clipboard]::SetText($codeTextBox.Text)
+        $statusLabel.Text = "Code copied to clipboard"
+        Write-TerminalOutput "Script code copied to clipboard" ([System.Drawing.Color]::FromArgb(0, 200, 100))
+    } else {
+        $statusLabel.Text = "No code to copy"
+    }
+})
+
+# Form closing event - save settings before closing
+$form.Add_FormClosing({
+    param($sender, $e)
+    Save-Settings
+    
+    # Stop scheduler timer
+    if ($script:schedulerTimer) {
+        $script:schedulerTimer.Stop()
+        $script:schedulerTimer.Dispose()
+    }
+})
+
+# Load and restore settings on startup
+$settings = Load-Settings
+if ($null -ne $settings) {
+    Restore-Settings -settings $settings
+}
+
+# Load favorites on startup
+$script:favorites = Load-Favorites
+
+# Load OpenAI API key if stored
+Get-OpenAIApiKey | Out-Null
+
+# Start the scheduler timer to check for pending tasks
+Start-SchedulerTimer
+
+# Show the form
+$form.Add_Shown({ $form.Activate() })
+[void]$form.ShowDialog()
