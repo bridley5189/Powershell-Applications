@@ -1,0 +1,32 @@
+<<<<<<< HEAD
+# Backup Files
+*.bak
+*.backup
+*.backup-*
+
+# Temporary Files
+tmp_*
+temp_*
+
+# IDE
+.vscode/settings.json
+.vscode/launch.json
+
+# System
+.DS_Store
+Thumbs.db
+=======
+# Binaries and installers (prefer Releases)
+*.exe
+*.msi
+*.zip
+
+# Logs
+logs/
+*.log
+
+# Editor/OS
+.vscode/
+Thumbs.db
+.DS_Store
+>>>>>>> 6ddb7bd (chore(structure): organize scripts into folders; add PSScriptAnalyzer CI, .gitignore, and docs template; expand README)

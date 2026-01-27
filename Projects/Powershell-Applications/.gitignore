@@ -1,0 +1,26 @@
+# Backup Files
+*.bak
+*.backup
+*.backup-*
+
+# Temporary Files
+tmp_*
+temp_*
+
+# Binaries and installers (prefer Releases)
+*.exe
+*.msi
+*.zip
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.vscode/settings.json
+.vscode/launch.json
+
+# System
+.DS_Store
+Thumbs.db
