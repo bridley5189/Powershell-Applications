@@ -471,7 +471,7 @@ Function Get-WMIUserData {
 
     #Grab the logged in user from WMI
     Try {
-        $LoggedInUserWMI = Get-WmiObject -class win32_computersystem | select-object username
+        $LoggedInUserWMI = Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object Username
     } Catch {
         $ErrorMessage = $_.Exception.Message
         New-Outputline "Error retrieving Logged in User from WMI - $($ErrorMessage)" -type "Error"
@@ -588,7 +588,7 @@ if($GetUserDataOK.status -eq $true) {
 
 #Section 0 Step 2: Grab the computername from WMI
 Try {
-    $ComputerName = (Get-WmiObject -class win32_computersystem | select-object Name).Name
+    $ComputerName = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Name)
 } Catch {
     $ErrorMessage = $_.Exception.Message
     New-Outputline -Message "Error retrieving WMI query: $($ErrorMessage)" -type "Error"
@@ -843,7 +843,7 @@ if ($ProcessWindowsUpdate -eq $True) {
         if(($LoopStatus -eq $True) -and ($WUServiceAction -eq "ForceStop")) {
             #Get the PID of the service
             try {
-                $WUServiceWMI = Get-WmiObject -Class win32_service -Filter "name= 'wuauserv'"
+                $WUServiceWMI = Get-CimInstance -ClassName Win32_Service -Filter "name='wuauserv'"
             } catch {
                 $ErrorMessage = $_.Exception.Message
                 New-Outputline -Message "Failed to Get Windows Update Service from WMI - $($ErrorMessage)" -Type "Error"

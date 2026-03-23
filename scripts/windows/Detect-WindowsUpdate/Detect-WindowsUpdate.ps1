@@ -359,7 +359,7 @@ Function Set-WURemediationLevel {
 
 #Section 0 Step 1: Grab the logged in user from WMI
 Try {
-    $LoggedinUser = (Get-WmiObject -class win32_computersystem | select-object username).Username
+    $LoggedinUser = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Username)
 } Catch {
     $ErrorMessage = $_.Exception.Message
     New-Outputline -Message "Error retrieving WMI query: $($ErrorMessage)" -type "Error"
@@ -380,7 +380,7 @@ if($Username -ne "Unknown") {
 }
 #Section 0 Step 2: Grab the computername from WMI
 Try {
-    $ComputerName = (Get-WmiObject -class win32_computersystem | select-object Name).Name
+    $ComputerName = (Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Name)
 } Catch {
     $ErrorMessage = $_.Exception.Message
     New-Outputline -Message "Error retrieving WMI query: $($ErrorMessage)" -type "Error"

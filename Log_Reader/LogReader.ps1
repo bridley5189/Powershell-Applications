@@ -40,8 +40,8 @@ param(
     [PSCredential]$Credential
 )
 
-# Default hard-coded remote log location
-$script:DefaultRemotePath = "\\cm1.corp.contoso.com\c$\Program Files\Microsoft Configuration Manager\Logs"
+# Default remote log location (set via -LogPath parameter or interactively via menu option 4)
+$script:DefaultRemotePath = ""
 
 # Function to display header
 function Show-Header {
@@ -360,9 +360,9 @@ function Select-LogFile {
     Write-Host "2. Enter path manually" -ForegroundColor White
     Write-Host "3. Quick select common location" -ForegroundColor White
     Write-Host "4. Remote computer" -ForegroundColor White
-    Write-Host "5. Default remote SCCM path" -ForegroundColor White
+    Write-Host "5. Remote SCCM/ConfigMgr Logs path" -ForegroundColor White
     
-    $choice = Read-Host "`nEnter choice (1-4)"
+    $choice = Read-Host "`nEnter choice (1-5)"
     
     switch ($choice) {
         "1" {
@@ -458,8 +458,13 @@ function Select-LogFile {
             return $resolved.Path
         }
         "5" {
-            $remotePath = $script:DefaultRemotePath
-            Write-Host "Using default remote path: $remotePath" -ForegroundColor Cyan
+            $remotePath = Read-Host "Enter the UNC path to the remote SCCM/ConfigMgr Logs folder (e.g. \\\\server\\c`$\\...\\Logs)"
+            $remotePath = $remotePath.Trim().Trim('"').Trim("'")
+            if ([string]::IsNullOrWhiteSpace($remotePath)) {
+                Write-Host "No path entered. Exiting." -ForegroundColor Red
+                exit
+            }
+            Write-Host "Using remote path: $remotePath" -ForegroundColor Cyan
             $remoteComputer = ""
             if ($remotePath -match '^\\\\([^\\]+)\\') { $remoteComputer = $matches[1] }
             $useCred = Read-Host "Use alternate credentials for $remoteComputer? (Y/N)"
